@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>カメラで振る棒 対戦モード</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700&family=Inter:wght@400;600&display=swap');
+        
+        body {
+            margin: 0;
+            padding: 0;
+            background: #0a0a12;
+            color: #e0e0ff;
+            font-family: 'Noto Sans JP', 'Inter', system-ui, sans-serif;
+            overflow: hidden;
+            touch-action: none;
+        }
+        
+        #header {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 52px;
+            background: rgba(10, 10, 18, 0.92);
+            backdrop-filter: blur(14px);
+            border-bottom: 1px solid rgba(255,255,255,0.08);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 16px;
+            z-index: 200;
+        }
+        
+        #header h1 {
+            margin: 0;
+            font-size: 16px;
+            font-weight: 700;
+            letter-spacing: 0.3px;
+        }
+        
+        .controls {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        
+        button {
+            background: rgba(255,255,255,0.1);
+            border: 1px solid rgba(255,255,255,0.15);
+            color: #e0e0ff;
+            padding: 7px 14px;
+            border-radius: 9999px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            touch-action: manipulation;
+        }
+        
+        button:active {
+            background: rgba(255,255,255,0.22);
+            transform: scale(0.95);
+        }
+        
+        #main {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+        }
+        
+        #canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            touch-action: none;
+        }
+        
+        #status {
+            position: fixed;
+            bottom: 70px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(10,10,18,0.85);
+            padding: 6px 18px;
+            border-radius: 9999px;
+            font-size: 12px;
+            border: 1px solid rgba(255,255,255,0.1);
+            z-index: 150;
+            white-space: nowrap;
+        }
+        
+        .info {
+            position: fixed;
+            top: 60px;
+            left: 16px;
+            right: 16px;
+            background: rgba(10,10,18,0.75);
+            padding: 10px 14px;
+            border-radius: 12px;
+            font-size: 12px;
+            line-height: 1.5;
+            border: 1px solid rgba(255,255,255,0.08);
+            z-index: 100;
+            max-width: 420px;
+            margin: 0 auto;
+        }
+        
+        .hidden { display: none !important; }
+        
+        .player-label {
+            font-size: 11px;
+            font-weight: 700;
+            padding: 1px 7px;
+            border-radius: 4px;
+            margin-left: 6px;
+        }
+    </style>
+</head>
+<body>
+    <div id="header">
+        <h1>📹 カメラで振る棒 対戦</h1>
+        <div class="controls">
+            <button id="modeBtn">2人対戦モード</button>
+            <button id="cameraBtn">📷 カメラ切替</button>
+            <button id="muteBtn">🔊</button>
+        </div>
+    </div>
+
+    <div id="main">
+        <canvas id="canvas"></canvas>
+    </div>
+
+    <div id="status"></div>
+    
+    <div class="info" id="infoBox">
+        <strong>使い方</strong><br>
+        1. 棒の<strong>先端</strong>に明るい色のテープやマーカーを貼る（<span style="color:#ff6b6b">赤</span> or <span style="color:#4ade80">緑</span> or <span style="color:#60a5fa">青</span>がおすすめ）<br>
+        2. カメラにかざして振る → 動きに合わせて効果音が鳴ります<br>
+        3. 2人対戦モードでは赤と青の2本を同時に認識します
+    </div>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d', { alpha: true, desynchronized: true });
+        
+        let video = document.createElement('video');
+        video.setAttribute('playsinline', true);
+        video.muted = true;
+        
+        let audioCtx = null;
+        let isMuted = false;
+        let currentMode = 'duel'; // 'single' or 'duel'
+        
+        // Tracking state
+        let trackers = {
+            red: { x: 0, y: 0, prevX: 0, prevY: 0, vel: 0, size: 0, active: false, lastTrigger: 0, color: {r:235, g:55, b:55} },
+            blue: { x: 0, y: 0, prevX: 0, prevY: 0, vel: 0, size: 0, active: false, lastTrigger: 0, color: {r:70, g:130, b:235} }
+        };
+        
+        let analysisW = 320;
+        let analysisH = 240;
+        let analysisCanvas = document.createElement('canvas');
+        let analysisCtx = analysisCanvas.getContext('2d', { willReadFrequently: true });
+        
+        let lastFrameTime = performance.now();
+        let stream = null;
+        let usingFrontCamera = false;
+        
+        function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            analysisCanvas.width = analysisW;
+            analysisCanvas.height = analysisH;
+        }
+        
+        function initAudio() {
+            if (audioCtx) return;
+            try {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            } catch(e) {}
+        }
+        
+        function playWhoosh(velocity, playerKey, pan = 0) {
+            if (!audioCtx || isMuted) return;
+            
+            const tracker = trackers[playerKey];
+            const now = performance.now();
+            if (now - tracker.lastTrigger < 90) return;
+            tracker.lastTrigger = now;
+            
+            const duration = 0.42;
+            const sampleRate = audioCtx.sampleRate;
+            const buffer = audioCtx.createBuffer(1, Math.floor(sampleRate * duration), sampleRate);
+            const data = buffer.getChannelData(0);
+            
+            for (let i = 0; i < data.length; i++) {
+                const t = i / data.length;
+                data[i] = (Math.random() * 2 - 1) * (1 - t * 1.05);
+            }
+            
+            const source = audioCtx.createBufferSource();
+            source.buffer = buffer;
+            
+            const filter = audioCtx.createBiquadFilter();
+            filter.type = 'lowpass';
+            const brightness = Math.min(4800, 720 + velocity * 260);
+            filter.frequency.value = brightness;
+            filter.Q.value = 1.1;
+            
+            const shelf = audioCtx.createBiquadFilter();
+            shelf.type = 'highshelf';
+            shelf.frequency.value = 2600;
+            shelf.gain.value = Math.min(5, velocity * 0.9);
+            
+            const gain = audioCtx.createGain();
+            const vol = Math.min(0.85, 0.22 + velocity * 0.07);
+            gain.gain.value = vol;
+            
+            source.playbackRate.value = 0.8 + Math.min(velocity * 0.065, 1.4);
+            
+            // Stereo panning for duel feel
+            const panner = audioCtx.createStereoPanner();
+            panner.pan.value = Math.max(-0.9, Math.min(0.9, pan));
+            
+            const audioNow = audioCtx.currentTime;
+            gain.gain.setValueAtTime(vol, audioNow);
+            gain.gain.linearRampToValueAtTime(0.001, audioNow + duration * 0.82);
+            
+            source.connect(filter);
+            filter.connect(shelf);
+            shelf.connect(panner);
+            panner.connect(gain);
+            gain.connect(audioCtx.destination);
+            
+            source.start(audioNow);
+        }
+        
+        function playClash() {
+            if (!audioCtx || isMuted) return;
+            
+            const duration = 0.28;
+            const buffer = audioCtx.createBuffer(1, Math.floor(audioCtx.sampleRate * duration), audioCtx.sampleRate);
+            const data = buffer.getChannelData(0);
+            for (let i = 0; i < data.length; i++) {
+                data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / data.length, 0.6);
+            }
+            
+            const source = audioCtx.createBufferSource();
+            source.buffer = buffer;
+            
+            const filter = audioCtx.createBiquadFilter();
+            filter.type = 'bandpass';
+            filter.frequency.value = 420;
+            filter.Q.value = 2.8;
+            
+            const gain = audioCtx.createGain();
+            gain.gain.value = 0.7;
+            
+            const audioNow = audioCtx.currentTime;
+            gain.gain.setValueAtTime(0.7, audioNow);
+            gain.gain.linearRampToValueAtTime(0.001, audioNow + 0.22);
+            
+            source.connect(filter);
+            filter.connect(gain);
+            gain.connect(audioCtx.destination);
+            source.start(audioNow);
+        }
+        
+        function findColorCentroid(imageData, targetR, targetG, targetB, tolerance = 68) {
+            let sumX = 0, sumY = 0, count = 0;
+            const data = imageData.data;
+            const w = imageData.width;
+            const h = imageData.height;
+            
+            for (let i = 0; i < data.length; i += 4) {
+                const r = data[i];
+                const g = data[i + 1];
+                const b = data[i + 2];
+                
+                const dist = Math.abs(r - targetR) + Math.abs(g - targetG) + Math.abs(b - targetB);
+                if (dist < tolerance) {
+                    const idx = i / 4;
+                    const x = idx % w;
+                    const y = Math.floor(idx / w);
+                    sumX += x;
+                    sumY += y;
+                    count++;
+                }
+            }
+            
+            if (count < 25) return null;
+            
+            return {
+                x: sumX / count,
+                y: sumY / count,
+                size: count
+            };
+        }
+        
+        function updateTracker(trackerKey, newBlob, dt) {
+            const t = trackers[trackerKey];
+            if (!newBlob) {
+                t.active = false;
+                t.vel = 0;
+                return;
+            }
+            
+            // Smooth position (reduce jitter)
+            const smooth = 0.72;
+            if (!t.active) {
+                t.x = newBlob.x;
+                t.y = newBlob.y;
+            } else {
+                t.x = t.x * smooth + newBlob.x * (1 - smooth);
+                t.y = t.y * smooth + newBlob.y * (1 - smooth);
+            }
+            
+            t.size = newBlob.size;
+            t.active = true;
+            
+            // Velocity (pixels per second in analysis space)
+            const dx = t.x - t.prevX;
+            const dy = t.y - t.prevY;
+            const speed = Math.hypot(dx, dy) / Math.max(dt, 0.016);
+            
+            t.vel = t.vel * 0.6 + speed * 0.4; // smooth velocity
+            
+            t.prevX = t.x;
+            t.prevY = t.y;
+        }
+        
+        function processFrame() {
+            if (!video.videoWidth || video.paused || video.ended) return;
+            
+            const now = performance.now();
+            const dt = (now - lastFrameTime) / 1000;
+            lastFrameTime = now;
+            
+            // Draw video to analysis canvas (downscaled)
+            analysisCtx.drawImage(video, 0, 0, analysisW, analysisH);
+            const imageData = analysisCtx.getImageData(0, 0, analysisW, analysisH);
+            
+            // Track red
+            const redBlob = findColorCentroid(imageData, 
+                trackers.red.color.r, trackers.red.color.g, trackers.red.color.b, 65);
+            updateTracker('red', redBlob, dt);
+            
+            // Track blue (only in duel mode)
+            let blueBlob = null;
+            if (currentMode === 'duel') {
+                blueBlob = findColorCentroid(imageData,
+                    trackers.blue.color.r, trackers.blue.color.g, trackers.blue.color.b, 72);
+                updateTracker('blue', blueBlob, dt);
+            } else {
+                trackers.blue.active = false;
+            }
+            
+            // Sound triggers
+            const redSpeed = trackers.red.vel;
+            const blueSpeed = trackers.blue.vel;
+            
+            if (redSpeed > 42 && trackers.red.active) {
+                const pan = currentMode === 'duel' ? -0.65 : 0;
+                playWhoosh(redSpeed / 28, 'red', pan);
+            }
+            
+            if (currentMode === 'duel' && blueSpeed > 42 && trackers.blue.active) {
+                playWhoosh(blueSpeed / 28, 'blue', 0.65);
+            }
+            
+            // Clash detection (both fast and close)
+            if (currentMode === 'duel' && trackers.red.active && trackers.blue.active) {
+                const dx = trackers.red.x - trackers.blue.x;
+                const dy = trackers.red.y - trackers.blue.y;
+                const dist = Math.hypot(dx, dy);
+                if (dist < 95 && redSpeed > 55 && blueSpeed > 55) {
+                    playClash();
+                }
+            }
+            
+            // === DRAW ===
+            ctx.save();
+            
+            // Background: video (slightly darkened)
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            
+            // Dark overlay for better visibility of overlays
+            ctx.fillStyle = 'rgba(0,0,0,0.25)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            const scaleX = canvas.width / analysisW;
+            const scaleY = canvas.height / analysisH;
+            
+            // Draw trackers
+            drawTracker('red', scaleX, scaleY);
+            if (currentMode === 'duel') {
+                drawTracker('blue', scaleX, scaleY);
+            }
+            
+            // Status text
+            ctx.fillStyle = 'rgba(255,255,255,0.85)';
+            ctx.font = '13px "Noto Sans JP", system-ui, sans-serif';
+            ctx.textAlign = 'left';
+            
+            let statusText = '';
+            if (trackers.red.active) {
+                statusText += `赤: ${Math.round(redSpeed)}px/s  `;
+            }
+            if (currentMode === 'duel' && trackers.blue.active) {
+                statusText += `青: ${Math.round(blueSpeed)}px/s`;
+            }
+            if (statusText) {
+                ctx.fillText(statusText, 18, canvas.height - 22);
+            }
+            
+            ctx.restore();
+        }
+        
+        function drawTracker(key, scaleX, scaleY) {
+            const t = trackers[key];
+            if (!t.active) return;
+            
+            const drawX = t.x * scaleX;
+            const drawY = t.y * scaleY;
+            
+            const speed = t.vel;
+            const isFast = speed > 45;
+            
+            // Motion trail (simple)
+            ctx.strokeStyle = key === 'red' ? 'rgba(255,90,90,0.35)' : 'rgba(90,160,255,0.35)';
+            ctx.lineWidth = 4;
+            ctx.beginPath();
+            ctx.moveTo(drawX, drawY);
+            ctx.lineTo(drawX - (t.x - t.prevX) * scaleX * 2.2, drawY - (t.y - t.prevY) * scaleY * 2.2);
+            ctx.stroke();
+            
+            // Glow circle
+            const glowSize = 11 + Math.min(speed / 9, 22);
+            ctx.fillStyle = key === 'red' 
+                ? (isFast ? 'rgba(255,80,80,0.3)' : 'rgba(255,100,100,0.18)')
+                : (isFast ? 'rgba(80,160,255,0.3)' : 'rgba(100,170,255,0.18)');
+            ctx.beginPath();
+            ctx.arc(drawX, drawY, glowSize + 8, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Main orb
+            ctx.fillStyle = key === 'red' ? '#ff6b6b' : '#60a5fa';
+            ctx.beginPath();
+            ctx.arc(drawX, drawY, glowSize, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Core
+            ctx.fillStyle = '#ffffff';
+            ctx.beginPath();
+            ctx.arc(drawX, drawY, Math.max(3.5, glowSize * 0.35), 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Label
+            ctx.fillStyle = '#fff';
+            ctx.font = 'bold 11px "Noto Sans JP", system-ui, sans-serif';
+            ctx.textAlign = 'center';
+            const label = key === 'red' ? 'P1' : 'P2';
+            ctx.fillText(label, drawX, drawY - glowSize - 8);
+        }
+        
+        function loop() {
+            processFrame();
+            requestAnimationFrame(loop);
+        }
+        
+        async function startCamera(preferFront = false) {
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+            }
+            
+            const constraints = {
+                video: {
+                    facingMode: preferFront ? 'user' : 'environment',
+                    width: { ideal: 640 },
+                    height: { ideal: 480 }
+                }
+            };
+            
+            try {
+                stream = await navigator.mediaDevices.getUserMedia(constraints);
+                video.srcObject = stream;
+                await video.play();
+                
+                usingFrontCamera = preferFront;
+                
+                // Start processing loop once
+                if (!window._loopStarted) {
+                    window._loopStarted = true;
+                    lastFrameTime = performance.now();
+                    requestAnimationFrame(loop);
+                }
+                
+                document.getElementById('infoBox').classList.add('hidden');
+            } catch (err) {
+                alert('カメラへのアクセスが拒否されました。ブラウザの設定でカメラを許可してください。');
+                console.error(err);
+            }
+        }
+        
+        function toggleMode() {
+            currentMode = currentMode === 'duel' ? 'single' : 'duel';
+            const btn = document.getElementById('modeBtn');
+            btn.textContent = currentMode === 'duel' ? '2人対戦モード' : '1人モード';
+            
+            if (currentMode === 'single') {
+                trackers.blue.active = false;
+            }
+        }
+        
+        async function switchCamera() {
+            usingFrontCamera = !usingFrontCamera;
+            await startCamera(usingFrontCamera);
+        }
+        
+        function toggleMute() {
+            isMuted = !isMuted;
+            const btn = document.getElementById('muteBtn');
+            btn.textContent = isMuted ? '🔇' : '🔊';
+            btn.style.opacity = isMuted ? '0.5' : '1';
+        }
+        
+        function setupUI() {
+            document.getElementById('modeBtn').addEventListener('click', toggleMode);
+            document.getElementById('cameraBtn').addEventListener('click', switchCamera);
+            document.getElementById('muteBtn').addEventListener('click', toggleMute);
+            
+            // Tap anywhere to init audio (iOS requirement)
+            canvas.addEventListener('pointerdown', () => {
+                initAudio();
+                if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+            });
+            
+            window.addEventListener('resize', resize);
+            
+            // Keyboard shortcuts
+            document.addEventListener('keydown', (e) => {
+                if (e.key.toLowerCase() === 'm') toggleMute();
+                if (e.key === ' ') {
+                    e.preventDefault();
+                    toggleMode();
+                }
+            });
+        }
+        
+        async function start() {
+            resize();
+            setupUI();
+            
+            // Default: start with back camera + duel mode
+            await startCamera(false);
+            
+            // Show initial tip
+            setTimeout(() => {
+                const info = document.getElementById('infoBox');
+                if (!info.classList.contains('hidden')) {
+                    info.style.transition = 'opacity 0.6s ease';
+                    info.style.opacity = '0.92';
+                }
+            }, 1800);
+            
+            console.log('%c[カメラ棒] Color tracking duel prototype ready. Use bright markers on rod tips!', 'color:#555');
+        }
+        
+        start();
+    </script>
+</body>
+</html>
