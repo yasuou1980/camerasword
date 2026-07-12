@@ -31,9 +31,9 @@ python3 -m http.server 8000
 
 ## サウンドクレジット
 
-🎬リアルテーマの効果音は以下のフリー素材を加工して埋め込んでいます：
+効果音は以下のフリー素材（加工してBase64埋め込み）とWeb Audio APIのリアルタイム合成を組み合わせています：
 
 - whoosh / punch / boom — [pygame](https://www.pygame.org/) examples data（パブリックドメイン）
-- hit / rock / riser / explosion — [Kenney.nl](https://kenney.nl/)（CC0）、[Python Arcade](https://api.arcade.academy/) 同梱版より
+- hit / rock / riser / explosion / laser / phase — [Kenney.nl](https://kenney.nl/)（CC0）、[Python Arcade](https://api.arcade.academy/) 同梱版より
 
-その他のテーマ（ビーム／サムライ／ヒーロー／ノーマル）はWeb Audio APIによるリアルタイム合成です。
+🎬リアルテーマは実録音が主体、ビーム／サムライ／ヒーローは実録音＋シンセのハイブリッド、ノーマルは合成のみです。
