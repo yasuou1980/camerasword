@@ -42,17 +42,19 @@
         
         .controls {
             display: flex;
-            gap: 8px;
+            gap: 6px;
             align-items: center;
+            flex-wrap: wrap;
+            justify-content: flex-end;
         }
-        
+
         button {
             background: rgba(255,255,255,0.1);
             border: 1px solid rgba(255,255,255,0.15);
             color: #e0e0ff;
-            padding: 7px 14px;
+            padding: 6px 10px;
             border-radius: 9999px;
-            font-size: 12px;
+            font-size: 11px;
             font-weight: 600;
             cursor: pointer;
             transition: all 0.15s ease;
@@ -125,8 +127,9 @@
     <div id="header">
         <h1>📹 カメラで振る棒 対戦</h1>
         <div class="controls">
+            <button id="themeBtn">⚡ビーム</button>
             <button id="modeBtn">2人対戦モード</button>
-            <button id="cameraBtn">📷 カメラ切替</button>
+            <button id="cameraBtn">📷</button>
             <button id="muteBtn">🔊</button>
         </div>
     </div>
@@ -142,7 +145,8 @@
         1. 棒の<strong>先端</strong>に明るい色のテープやマーカーを貼る（<span style="color:#ff6b6b">赤</span> or <span style="color:#60a5fa">青</span>がおすすめ）<br>
         2. カメラにかざして振る → 速さに応じていろんな効果音が鳴ります<br>
         3. 棒で<strong>大きく円を描く</strong>とリングが溜まって ⚡必殺技！<br>
-        4. 2人対戦モードで2本の棒を<strong>ぶつけ合う</strong>と金属の衝撃音＆火花！
+        4. 2人対戦モードで2本の棒を<strong>ぶつけ合う</strong>と衝撃音＆火花！<br>
+        5. <strong>⚡ボタン</strong>で音のテーマを切替：ビーム / サムライ / ヒーロー / ノーマル
     </div>
 
     <script>
@@ -156,6 +160,15 @@
         let audioCtx = null;
         let isMuted = false;
         let currentMode = 'duel'; // 'single' or 'duel'
+
+        // Sound themes: beam (lightsaber-style) / samurai (katana) / hero (sci-fi) / standard
+        const SOUND_THEMES = [
+            ['beam', '⚡ビーム'],
+            ['samurai', '🗡️サムライ'],
+            ['hero', '🚀ヒーロー'],
+            ['standard', '🔔ノーマル']
+        ];
+        let soundTheme = 'beam';
         
         // Tracking state
         let trackers = {
@@ -220,6 +233,15 @@
 
             const out = makePanner(pan);
 
+            switch (soundTheme) {
+                case 'beam': beamSwing(velocity, out); break;
+                case 'samurai': samuraiSwing(velocity, out); break;
+                case 'hero': heroSwing(velocity, out); break;
+                default: standardSwing(velocity, out);
+            }
+        }
+
+        function standardSwing(velocity, out) {
             // Pick a variant: heavy swings get a low "buon", otherwise
             // randomly alternate between the airy whoosh and a sharp swish
             const r = Math.random();
@@ -332,11 +354,30 @@
             noise.start(audioNow);
         }
         
-        // Metallic "clang" when the two markers collide
         function playImpact(intensity, pan = 0) {
             if (!audioCtx || isMuted) return;
-
             const out = makePanner(pan);
+            switch (soundTheme) {
+                case 'beam': beamImpact(intensity, out); break;
+                case 'samurai': samuraiImpact(intensity, out); break;
+                case 'hero': heroImpact(intensity, out); break;
+                default: standardImpact(intensity, out);
+            }
+        }
+
+        function playSpecial(pan = 0) {
+            if (!audioCtx || isMuted) return;
+            const out = makePanner(pan);
+            switch (soundTheme) {
+                case 'beam': beamSpecial(out); break;
+                case 'samurai': samuraiSpecial(out); break;
+                case 'hero': heroSpecial(out); break;
+                default: standardSpecial(out);
+            }
+        }
+
+        // Metallic "clang" when the two markers collide
+        function standardImpact(intensity, out) {
             const audioNow = audioCtx.currentTime;
             const level = Math.min(0.9, 0.35 + intensity * 0.3);
 
@@ -374,10 +415,7 @@
         }
 
         // Special move: rising charge sweep then a deep boom
-        function playSpecial(pan = 0) {
-            if (!audioCtx || isMuted) return;
-
-            const out = makePanner(pan);
+        function standardSpecial(out) {
             const audioNow = audioCtx.currentTime;
 
             // Charge-up sweep
@@ -434,6 +472,532 @@
             noise.start(boomAt);
         }
         
+        // ============ ⚡ BEAM theme (lightsaber-style energy blade) ============
+
+        // Persistent low hum while a marker is visible — the signature beam sound
+        const humState = { red: null, blue: null };
+
+        function ensureHum(key) {
+            if (!audioCtx || humState[key]) return;
+            const gain = audioCtx.createGain();
+            gain.gain.value = 0;
+            const filter = audioCtx.createBiquadFilter();
+            filter.type = 'lowpass';
+            filter.frequency.value = 750;
+            filter.Q.value = 2.5;
+            const panner = audioCtx.createStereoPanner();
+
+            // Two detuned saws beating against each other = electric hum
+            const baseF = key === 'red' ? 66 : 58;
+            const oscs = [0, 9].map(det => {
+                const o = audioCtx.createOscillator();
+                o.type = 'sawtooth';
+                o.frequency.value = baseF;
+                o.detune.value = det;
+                o.connect(filter);
+                o.start();
+                return o;
+            });
+
+            filter.connect(gain);
+            gain.connect(panner);
+            panner.connect(audioCtx.destination);
+            humState[key] = { oscs, gain, panner, baseF };
+        }
+
+        function updateHums() {
+            if (!audioCtx) return;
+            const tc = audioCtx.currentTime;
+            for (const key of ['red', 'blue']) {
+                const t = trackers[key];
+                const shouldPlay = soundTheme === 'beam' && !isMuted && t.active
+                    && (key === 'red' || currentMode === 'duel');
+                if (shouldPlay) ensureHum(key);
+                const h = humState[key];
+                if (!h) continue;
+
+                const target = shouldPlay ? Math.min(0.2, 0.055 + t.vel * 0.0011) : 0;
+                h.gain.gain.setTargetAtTime(target, tc, 0.08);
+                // Doppler-ish pitch rise while swinging
+                const freq = h.baseF * (1 + Math.min(t.vel, 260) * 0.0022);
+                h.oscs.forEach(o => o.frequency.setTargetAtTime(freq, tc, 0.06));
+                h.panner.pan.setTargetAtTime(
+                    currentMode === 'duel' ? (key === 'red' ? -0.5 : 0.5) : 0, tc, 0.2);
+            }
+        }
+
+        // Swing: resonant saw sweep up-and-down over the hum ("vwoom")
+        function beamSwing(velocity, out) {
+            const t0 = audioCtx.currentTime;
+            const dur = 0.38;
+            const base = 70 + Math.min(velocity * 14, 90);
+
+            [0, 8].forEach(det => {
+                const osc = audioCtx.createOscillator();
+                osc.type = 'sawtooth';
+                osc.detune.value = det;
+                osc.frequency.setValueAtTime(base, t0);
+                osc.frequency.exponentialRampToValueAtTime(base * 2.3, t0 + dur * 0.4);
+                osc.frequency.exponentialRampToValueAtTime(base * 0.75, t0 + dur);
+
+                const lp = audioCtx.createBiquadFilter();
+                lp.type = 'lowpass';
+                lp.Q.value = 5;
+                lp.frequency.setValueAtTime(480, t0);
+                lp.frequency.exponentialRampToValueAtTime(1500, t0 + dur * 0.4);
+                lp.frequency.exponentialRampToValueAtTime(380, t0 + dur);
+
+                const g = audioCtx.createGain();
+                const vol = Math.min(0.42, 0.16 + velocity * 0.045);
+                g.gain.setValueAtTime(0.001, t0);
+                g.gain.exponentialRampToValueAtTime(vol, t0 + dur * 0.35);
+                g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+
+                osc.connect(lp);
+                lp.connect(g);
+                g.connect(out);
+                osc.start(t0);
+                osc.stop(t0 + dur + 0.02);
+            });
+
+            // Air movement under the sweep
+            const noise = audioCtx.createBufferSource();
+            noise.buffer = makeNoiseBuffer(dur);
+            const bp = audioCtx.createBiquadFilter();
+            bp.type = 'bandpass';
+            bp.frequency.value = 320;
+            bp.Q.value = 1.4;
+            const ng = audioCtx.createGain();
+            ng.gain.setValueAtTime(0.001, t0);
+            ng.gain.exponentialRampToValueAtTime(0.16, t0 + dur * 0.35);
+            ng.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+            noise.connect(bp);
+            bp.connect(ng);
+            ng.connect(out);
+            noise.start(t0);
+        }
+
+        // Impact: energy blades locking — deep buzz + fizz + electric zaps
+        function beamImpact(intensity, out) {
+            const t0 = audioCtx.currentTime;
+            const level = Math.min(0.9, 0.4 + intensity * 0.3);
+
+            const buzz = audioCtx.createOscillator();
+            buzz.type = 'sawtooth';
+            buzz.frequency.value = 48;
+            const buzzLp = audioCtx.createBiquadFilter();
+            buzzLp.type = 'lowpass';
+            buzzLp.frequency.value = 320;
+            const buzzG = audioCtx.createGain();
+            buzzG.gain.setValueAtTime(level * 0.75, t0);
+            buzzG.gain.exponentialRampToValueAtTime(0.001, t0 + 0.38);
+            buzz.connect(buzzLp);
+            buzzLp.connect(buzzG);
+            buzzG.connect(out);
+            buzz.start(t0);
+            buzz.stop(t0 + 0.4);
+
+            const fizz = audioCtx.createBufferSource();
+            fizz.buffer = makeNoiseBuffer(0.3, 0.9);
+            const fizzBp = audioCtx.createBiquadFilter();
+            fizzBp.type = 'bandpass';
+            fizzBp.frequency.value = 1900;
+            fizzBp.Q.value = 0.8;
+            const fizzG = audioCtx.createGain();
+            fizzG.gain.setValueAtTime(level * 0.6, t0);
+            fizzG.gain.linearRampToValueAtTime(0.001, t0 + 0.3);
+            fizz.connect(fizzBp);
+            fizzBp.connect(fizzG);
+            fizzG.connect(out);
+            fizz.start(t0);
+
+            // Random electric zaps sputtering off the contact point
+            for (let i = 0; i < 3; i++) {
+                const at = t0 + i * 0.05;
+                const zap = audioCtx.createOscillator();
+                zap.type = 'square';
+                const f = 700 + Math.random() * 1100;
+                zap.frequency.setValueAtTime(f, at);
+                zap.frequency.exponentialRampToValueAtTime(120, at + 0.07);
+                const zg = audioCtx.createGain();
+                zg.gain.setValueAtTime(level * 0.2, at);
+                zg.gain.exponentialRampToValueAtTime(0.001, at + 0.07);
+                zap.connect(zg);
+                zg.connect(out);
+                zap.start(at);
+                zap.stop(at + 0.09);
+            }
+        }
+
+        // Special: power overload — hum surges up then discharges
+        function beamSpecial(out) {
+            const t0 = audioCtx.currentTime;
+
+            const rise = audioCtx.createOscillator();
+            rise.type = 'sawtooth';
+            rise.frequency.setValueAtTime(60, t0);
+            rise.frequency.exponentialRampToValueAtTime(520, t0 + 0.55);
+            const riseLp = audioCtx.createBiquadFilter();
+            riseLp.type = 'lowpass';
+            riseLp.Q.value = 6;
+            riseLp.frequency.setValueAtTime(400, t0);
+            riseLp.frequency.exponentialRampToValueAtTime(2800, t0 + 0.55);
+            const riseG = audioCtx.createGain();
+            riseG.gain.setValueAtTime(0.05, t0);
+            riseG.gain.exponentialRampToValueAtTime(0.5, t0 + 0.5);
+            riseG.gain.linearRampToValueAtTime(0.001, t0 + 0.6);
+            rise.connect(riseLp);
+            riseLp.connect(riseG);
+            riseG.connect(out);
+            rise.start(t0);
+            rise.stop(t0 + 0.62);
+
+            const boomAt = t0 + 0.55;
+            const sub = audioCtx.createOscillator();
+            sub.type = 'sine';
+            sub.frequency.setValueAtTime(130, boomAt);
+            sub.frequency.exponentialRampToValueAtTime(36, boomAt + 0.6);
+            const subG = audioCtx.createGain();
+            subG.gain.setValueAtTime(0.9, boomAt);
+            subG.gain.exponentialRampToValueAtTime(0.001, boomAt + 0.65);
+            sub.connect(subG);
+            subG.connect(out);
+            sub.start(boomAt);
+            sub.stop(boomAt + 0.7);
+
+            const burst = audioCtx.createBufferSource();
+            burst.buffer = makeNoiseBuffer(0.55, 0.85);
+            const burstLp = audioCtx.createBiquadFilter();
+            burstLp.type = 'lowpass';
+            burstLp.frequency.setValueAtTime(3200, boomAt);
+            burstLp.frequency.exponentialRampToValueAtTime(240, boomAt + 0.5);
+            const burstG = audioCtx.createGain();
+            burstG.gain.setValueAtTime(0.65, boomAt);
+            burstG.gain.linearRampToValueAtTime(0.001, boomAt + 0.55);
+            burst.connect(burstLp);
+            burstLp.connect(burstG);
+            burstG.connect(out);
+            burst.start(boomAt);
+        }
+
+        // ============ 🗡️ SAMURAI theme (katana) ============
+
+        // Swing: razor-thin high whistle — "hyun"
+        function samuraiSwing(velocity, out) {
+            const t0 = audioCtx.currentTime;
+            const dur = 0.16 + Math.min(velocity * 0.012, 0.09);
+
+            const noise = audioCtx.createBufferSource();
+            noise.buffer = makeNoiseBuffer(dur, 0.7);
+            const bp = audioCtx.createBiquadFilter();
+            bp.type = 'bandpass';
+            bp.Q.value = 3.8;
+            const peak = Math.min(7200, 4600 + velocity * 380);
+            bp.frequency.setValueAtTime(2600, t0);
+            bp.frequency.exponentialRampToValueAtTime(peak, t0 + dur * 0.45);
+            bp.frequency.exponentialRampToValueAtTime(2900, t0 + dur);
+
+            const g = audioCtx.createGain();
+            const vol = Math.min(0.7, 0.2 + velocity * 0.09);
+            g.gain.setValueAtTime(0.001, t0);
+            g.gain.exponentialRampToValueAtTime(vol, t0 + dur * 0.3);
+            g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+
+            noise.connect(bp);
+            bp.connect(g);
+            g.connect(out);
+            noise.start(t0);
+
+            // Body of the cut on strong swings
+            if (velocity > 3) {
+                const body = audioCtx.createBufferSource();
+                body.buffer = makeNoiseBuffer(0.24);
+                const lp = audioCtx.createBiquadFilter();
+                lp.type = 'lowpass';
+                lp.frequency.value = 480;
+                const bg = audioCtx.createGain();
+                bg.gain.setValueAtTime(0.16, t0);
+                bg.gain.linearRampToValueAtTime(0.001, t0 + 0.24);
+                body.connect(lp);
+                lp.connect(bg);
+                bg.connect(out);
+                body.start(t0);
+            }
+        }
+
+        // Impact: blades ringing — "kiin" with a long metallic tail
+        function samuraiImpact(intensity, out) {
+            const t0 = audioCtx.currentTime;
+            const level = Math.min(0.85, 0.35 + intensity * 0.28);
+
+            const partials = [1250, 1870, 2690, 3900, 5200];
+            partials.forEach((f, i) => {
+                const osc = audioCtx.createOscillator();
+                osc.type = 'triangle';
+                osc.frequency.value = f * (0.985 + Math.random() * 0.03);
+                const g = audioCtx.createGain();
+                g.gain.setValueAtTime(level * 0.5 / (i + 1.2), t0);
+                g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.55 + i * 0.09);
+                osc.connect(g);
+                g.connect(out);
+                osc.start(t0);
+                osc.stop(t0 + 1.1);
+            });
+
+            // Attack click
+            const click = audioCtx.createBufferSource();
+            click.buffer = makeNoiseBuffer(0.035, 1.0);
+            const hp = audioCtx.createBiquadFilter();
+            hp.type = 'highpass';
+            hp.frequency.value = 3200;
+            const cg = audioCtx.createGain();
+            cg.gain.setValueAtTime(level, t0);
+            cg.gain.linearRampToValueAtTime(0.001, t0 + 0.035);
+            click.connect(hp);
+            hp.connect(cg);
+            cg.connect(out);
+            click.start(t0);
+
+            // Low thud of the clash
+            const thud = audioCtx.createOscillator();
+            thud.type = 'sine';
+            thud.frequency.setValueAtTime(135, t0);
+            thud.frequency.exponentialRampToValueAtTime(58, t0 + 0.18);
+            const tg = audioCtx.createGain();
+            tg.gain.setValueAtTime(level * 0.4, t0);
+            tg.gain.exponentialRampToValueAtTime(0.001, t0 + 0.2);
+            thud.connect(tg);
+            tg.connect(out);
+            thud.start(t0);
+            thud.stop(t0 + 0.22);
+        }
+
+        // Special: iai draw — "shakiin" shimmer, then a taiko boom
+        function samuraiSpecial(out) {
+            const t0 = audioCtx.currentTime;
+
+            // Blade sliding out of the sheath
+            const shing = audioCtx.createBufferSource();
+            shing.buffer = makeNoiseBuffer(0.38, 0.6);
+            const shingHp = audioCtx.createBiquadFilter();
+            shingHp.type = 'highpass';
+            shingHp.frequency.setValueAtTime(2200, t0);
+            shingHp.frequency.exponentialRampToValueAtTime(8200, t0 + 0.35);
+            const shingG = audioCtx.createGain();
+            shingG.gain.setValueAtTime(0.05, t0);
+            shingG.gain.exponentialRampToValueAtTime(0.4, t0 + 0.3);
+            shingG.gain.linearRampToValueAtTime(0.001, t0 + 0.4);
+            shing.connect(shingHp);
+            shingHp.connect(shingG);
+            shingG.connect(out);
+            shing.start(t0);
+
+            // Ringing shimmer on top
+            [2400, 3600].forEach((f, i) => {
+                const osc = audioCtx.createOscillator();
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(f, t0);
+                osc.frequency.exponentialRampToValueAtTime(f * 1.9, t0 + 0.35);
+                const g = audioCtx.createGain();
+                g.gain.setValueAtTime(0.001, t0);
+                g.gain.exponentialRampToValueAtTime(0.18 / (i + 1), t0 + 0.3);
+                g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.75);
+                osc.connect(g);
+                g.connect(out);
+                osc.start(t0);
+                osc.stop(t0 + 0.8);
+            });
+
+            // Taiko "don"
+            const boomAt = t0 + 0.42;
+            const don = audioCtx.createOscillator();
+            don.type = 'sine';
+            don.frequency.setValueAtTime(105, boomAt);
+            don.frequency.exponentialRampToValueAtTime(38, boomAt + 0.5);
+            const dg = audioCtx.createGain();
+            dg.gain.setValueAtTime(0.95, boomAt);
+            dg.gain.exponentialRampToValueAtTime(0.001, boomAt + 0.55);
+            don.connect(dg);
+            dg.connect(out);
+            don.start(boomAt);
+            don.stop(boomAt + 0.6);
+
+            const skin = audioCtx.createBufferSource();
+            skin.buffer = makeNoiseBuffer(0.3, 1.0);
+            const skinLp = audioCtx.createBiquadFilter();
+            skinLp.type = 'lowpass';
+            skinLp.frequency.value = 420;
+            const sg = audioCtx.createGain();
+            sg.gain.setValueAtTime(0.5, boomAt);
+            sg.gain.linearRampToValueAtTime(0.001, boomAt + 0.3);
+            skin.connect(skinLp);
+            skinLp.connect(sg);
+            sg.connect(out);
+            skin.start(boomAt);
+        }
+
+        // ============ 🚀 HERO theme (sci-fi hero) ============
+
+        // Swing: laser zap — pitch dive (or rise) square wave
+        function heroSwing(velocity, out) {
+            const t0 = audioCtx.currentTime;
+            const dur = 0.16;
+            const start = 650 + Math.min(velocity * 240, 1400);
+            const goingUp = Math.random() < 0.35;
+
+            const osc = audioCtx.createOscillator();
+            osc.type = 'square';
+            if (goingUp) {
+                osc.frequency.setValueAtTime(start * 0.35, t0);
+                osc.frequency.exponentialRampToValueAtTime(start * 1.5, t0 + dur);
+            } else {
+                osc.frequency.setValueAtTime(start, t0);
+                osc.frequency.exponentialRampToValueAtTime(start * 0.16, t0 + dur);
+            }
+
+            const lp = audioCtx.createBiquadFilter();
+            lp.type = 'lowpass';
+            lp.frequency.value = 3200;
+
+            const g = audioCtx.createGain();
+            const vol = Math.min(0.5, 0.22 + velocity * 0.05);
+            g.gain.setValueAtTime(vol, t0);
+            g.gain.linearRampToValueAtTime(0.001, t0 + dur + 0.03);
+
+            osc.connect(lp);
+            lp.connect(g);
+            g.connect(out);
+            osc.start(t0);
+            osc.stop(t0 + dur + 0.05);
+
+            // High sparkle tail
+            const spark = audioCtx.createOscillator();
+            spark.type = 'sine';
+            spark.frequency.setValueAtTime(start * 2.2, t0);
+            spark.frequency.exponentialRampToValueAtTime(start * 0.9, t0 + 0.09);
+            const sg = audioCtx.createGain();
+            sg.gain.setValueAtTime(vol * 0.3, t0);
+            sg.gain.exponentialRampToValueAtTime(0.001, t0 + 0.09);
+            spark.connect(sg);
+            sg.connect(out);
+            spark.start(t0);
+            spark.stop(t0 + 0.1);
+        }
+
+        // Impact: electric burst — beating squares + noise + sub drop
+        function heroImpact(intensity, out) {
+            const t0 = audioCtx.currentTime;
+            const level = Math.min(0.9, 0.4 + intensity * 0.3);
+
+            // Two close frequencies beating = electric snarl
+            [220, 229].forEach(f => {
+                const osc = audioCtx.createOscillator();
+                osc.type = 'square';
+                osc.frequency.value = f;
+                const lp = audioCtx.createBiquadFilter();
+                lp.type = 'lowpass';
+                lp.frequency.value = 1400;
+                const g = audioCtx.createGain();
+                g.gain.setValueAtTime(level * 0.35, t0);
+                g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.24);
+                osc.connect(lp);
+                lp.connect(g);
+                g.connect(out);
+                osc.start(t0);
+                osc.stop(t0 + 0.26);
+            });
+
+            const burst = audioCtx.createBufferSource();
+            burst.buffer = makeNoiseBuffer(0.22, 0.9);
+            const bp = audioCtx.createBiquadFilter();
+            bp.type = 'bandpass';
+            bp.frequency.value = 950;
+            bp.Q.value = 0.9;
+            const bg = audioCtx.createGain();
+            bg.gain.setValueAtTime(level * 0.7, t0);
+            bg.gain.linearRampToValueAtTime(0.001, t0 + 0.22);
+            burst.connect(bp);
+            bp.connect(bg);
+            bg.connect(out);
+            burst.start(t0);
+
+            const sub = audioCtx.createOscillator();
+            sub.type = 'sine';
+            sub.frequency.setValueAtTime(75, t0);
+            sub.frequency.exponentialRampToValueAtTime(36, t0 + 0.28);
+            const subG = audioCtx.createGain();
+            subG.gain.setValueAtTime(level * 0.55, t0);
+            subG.gain.exponentialRampToValueAtTime(0.001, t0 + 0.3);
+            sub.connect(subG);
+            subG.connect(out);
+            sub.start(t0);
+            sub.stop(t0 + 0.32);
+        }
+
+        // Special: power-up arpeggio then a big sci-fi boom
+        function heroSpecial(out) {
+            const t0 = audioCtx.currentTime;
+            const notes = [330, 440, 587, 784, 1047];
+            const step = 0.075;
+
+            notes.forEach((f, i) => {
+                const at = t0 + i * step;
+                const osc = audioCtx.createOscillator();
+                osc.type = 'square';
+                osc.frequency.value = f;
+                const lp = audioCtx.createBiquadFilter();
+                lp.type = 'lowpass';
+                lp.frequency.value = 3600;
+                const g = audioCtx.createGain();
+                g.gain.setValueAtTime(0.24, at);
+                g.gain.exponentialRampToValueAtTime(0.001, at + step * 1.6);
+                osc.connect(lp);
+                lp.connect(g);
+                g.connect(out);
+                osc.start(at);
+                osc.stop(at + step * 1.8);
+            });
+
+            const boomAt = t0 + notes.length * step + 0.03;
+            const sub = audioCtx.createOscillator();
+            sub.type = 'sine';
+            sub.frequency.setValueAtTime(150, boomAt);
+            sub.frequency.exponentialRampToValueAtTime(40, boomAt + 0.55);
+            const subG = audioCtx.createGain();
+            subG.gain.setValueAtTime(0.9, boomAt);
+            subG.gain.exponentialRampToValueAtTime(0.001, boomAt + 0.6);
+            sub.connect(subG);
+            subG.connect(out);
+            sub.start(boomAt);
+            sub.stop(boomAt + 0.65);
+
+            const wash = audioCtx.createBufferSource();
+            wash.buffer = makeNoiseBuffer(0.5, 0.85);
+            const washLp = audioCtx.createBiquadFilter();
+            washLp.type = 'lowpass';
+            washLp.frequency.setValueAtTime(2800, boomAt);
+            washLp.frequency.exponentialRampToValueAtTime(260, boomAt + 0.45);
+            const wg = audioCtx.createGain();
+            wg.gain.setValueAtTime(0.6, boomAt);
+            wg.gain.linearRampToValueAtTime(0.001, boomAt + 0.5);
+            wash.connect(washLp);
+            washLp.connect(wg);
+            wg.connect(out);
+            wash.start(boomAt);
+
+            // Heroic shimmer over the boom
+            const shine = audioCtx.createOscillator();
+            shine.type = 'sine';
+            shine.frequency.value = 1568;
+            const shg = audioCtx.createGain();
+            shg.gain.setValueAtTime(0.16, boomAt);
+            shg.gain.exponentialRampToValueAtTime(0.001, boomAt + 0.5);
+            shine.connect(shg);
+            shg.connect(out);
+            shine.start(boomAt);
+            shine.stop(boomAt + 0.55);
+        }
+
         function findColorCentroid(imageData, targetR, targetG, targetB, tolerance = 68) {
             let sumX = 0, sumY = 0, count = 0;
             const data = imageData.data;
@@ -586,6 +1150,9 @@
                 trackers.blue.active = false;
             }
             
+            // Continuous beam hum follows marker state every frame
+            updateHums();
+
             // Sound triggers
             const redSpeed = trackers.red.vel;
             const blueSpeed = trackers.blue.vel;
@@ -804,6 +1371,13 @@
             }
         }
         
+        function cycleTheme() {
+            const idx = SOUND_THEMES.findIndex(([key]) => key === soundTheme);
+            const [key, label] = SOUND_THEMES[(idx + 1) % SOUND_THEMES.length];
+            soundTheme = key;
+            document.getElementById('themeBtn').textContent = label;
+        }
+
         function toggleMode() {
             currentMode = currentMode === 'duel' ? 'single' : 'duel';
             const btn = document.getElementById('modeBtn');
@@ -827,6 +1401,7 @@
         }
         
         function setupUI() {
+            document.getElementById('themeBtn').addEventListener('click', cycleTheme);
             document.getElementById('modeBtn').addEventListener('click', toggleMode);
             document.getElementById('cameraBtn').addEventListener('click', switchCamera);
             document.getElementById('muteBtn').addEventListener('click', toggleMute);
@@ -842,6 +1417,7 @@
             // Keyboard shortcuts
             document.addEventListener('keydown', (e) => {
                 if (e.key.toLowerCase() === 'm') toggleMute();
+                if (e.key.toLowerCase() === 't') cycleTheme();
                 if (e.key === ' ') {
                     e.preventDefault();
                     toggleMode();
