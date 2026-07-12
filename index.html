@@ -139,9 +139,10 @@
     
     <div class="info" id="infoBox">
         <strong>使い方</strong><br>
-        1. 棒の<strong>先端</strong>に明るい色のテープやマーカーを貼る（<span style="color:#ff6b6b">赤</span> or <span style="color:#4ade80">緑</span> or <span style="color:#60a5fa">青</span>がおすすめ）<br>
-        2. カメラにかざして振る → 動きに合わせて効果音が鳴ります<br>
-        3. 2人対戦モードでは赤と青の2本を同時に認識します
+        1. 棒の<strong>先端</strong>に明るい色のテープやマーカーを貼る（<span style="color:#ff6b6b">赤</span> or <span style="color:#60a5fa">青</span>がおすすめ）<br>
+        2. カメラにかざして振る → 速さに応じていろんな効果音が鳴ります<br>
+        3. 棒で<strong>大きく円を描く</strong>とリングが溜まって ⚡必殺技！<br>
+        4. 2人対戦モードで2本の棒を<strong>ぶつけ合う</strong>と金属の衝撃音＆火花！
     </div>
 
     <script>
@@ -158,9 +159,15 @@
         
         // Tracking state
         let trackers = {
-            red: { x: 0, y: 0, prevX: 0, prevY: 0, vel: 0, size: 0, active: false, lastTrigger: 0, color: {r:235, g:55, b:55} },
-            blue: { x: 0, y: 0, prevX: 0, prevY: 0, vel: 0, size: 0, active: false, lastTrigger: 0, color: {r:70, g:130, b:235} }
+            red: { x: 0, y: 0, prevX: 0, prevY: 0, vel: 0, size: 0, active: false, lastTrigger: 0, history: [], charge: 0, lastSpecial: 0, specialFlashUntil: 0, color: {r:235, g:55, b:55} },
+            blue: { x: 0, y: 0, prevX: 0, prevY: 0, vel: 0, size: 0, active: false, lastTrigger: 0, history: [], charge: 0, lastSpecial: 0, specialFlashUntil: 0, color: {r:70, g:130, b:235} }
         };
+
+        // Effects state
+        let particles = []; // analysis-space coordinates
+        let prevPairDist = null;
+        let lastImpact = 0;
+        let screenFlash = { alpha: 0, color: '255,255,255' };
         
         let analysisW = 320;
         let analysisH = 240;
@@ -185,90 +192,246 @@
             } catch(e) {}
         }
         
+        function makeNoiseBuffer(duration, shape = 1.05) {
+            const sampleRate = audioCtx.sampleRate;
+            const buffer = audioCtx.createBuffer(1, Math.floor(sampleRate * duration), sampleRate);
+            const data = buffer.getChannelData(0);
+            for (let i = 0; i < data.length; i++) {
+                const t = i / data.length;
+                data[i] = (Math.random() * 2 - 1) * Math.max(0, 1 - t * shape);
+            }
+            return buffer;
+        }
+
+        function makePanner(pan) {
+            const panner = audioCtx.createStereoPanner();
+            panner.pan.value = Math.max(-0.9, Math.min(0.9, pan));
+            panner.connect(audioCtx.destination);
+            return panner;
+        }
+
         function playWhoosh(velocity, playerKey, pan = 0) {
             if (!audioCtx || isMuted) return;
-            
+
             const tracker = trackers[playerKey];
             const now = performance.now();
             if (now - tracker.lastTrigger < 90) return;
             tracker.lastTrigger = now;
-            
-            const duration = 0.42;
-            const sampleRate = audioCtx.sampleRate;
-            const buffer = audioCtx.createBuffer(1, Math.floor(sampleRate * duration), sampleRate);
-            const data = buffer.getChannelData(0);
-            
-            for (let i = 0; i < data.length; i++) {
-                const t = i / data.length;
-                data[i] = (Math.random() * 2 - 1) * (1 - t * 1.05);
+
+            const out = makePanner(pan);
+
+            // Pick a variant: heavy swings get a low "buon", otherwise
+            // randomly alternate between the airy whoosh and a sharp swish
+            const r = Math.random();
+            if (velocity > 3.2 && r < 0.5) {
+                whooshHeavy(velocity, out);
+            } else if (r < 0.45) {
+                whooshSwish(velocity, out);
+            } else {
+                whooshAiry(velocity, out);
             }
-            
+        }
+
+        // Variant 1: airy noise whoosh (the original sound)
+        function whooshAiry(velocity, out) {
+            const duration = 0.42;
             const source = audioCtx.createBufferSource();
-            source.buffer = buffer;
-            
+            source.buffer = makeNoiseBuffer(duration);
+
             const filter = audioCtx.createBiquadFilter();
             filter.type = 'lowpass';
-            const brightness = Math.min(4800, 720 + velocity * 260);
-            filter.frequency.value = brightness;
+            filter.frequency.value = Math.min(4800, 720 + velocity * 260);
             filter.Q.value = 1.1;
-            
+
             const shelf = audioCtx.createBiquadFilter();
             shelf.type = 'highshelf';
             shelf.frequency.value = 2600;
             shelf.gain.value = Math.min(5, velocity * 0.9);
-            
+
             const gain = audioCtx.createGain();
             const vol = Math.min(0.85, 0.22 + velocity * 0.07);
-            gain.gain.value = vol;
-            
+
             source.playbackRate.value = 0.8 + Math.min(velocity * 0.065, 1.4);
-            
-            // Stereo panning for duel feel
-            const panner = audioCtx.createStereoPanner();
-            panner.pan.value = Math.max(-0.9, Math.min(0.9, pan));
-            
+
             const audioNow = audioCtx.currentTime;
             gain.gain.setValueAtTime(vol, audioNow);
             gain.gain.linearRampToValueAtTime(0.001, audioNow + duration * 0.82);
-            
+
             source.connect(filter);
             filter.connect(shelf);
-            shelf.connect(panner);
-            panner.connect(gain);
-            gain.connect(audioCtx.destination);
-            
+            shelf.connect(gain);
+            gain.connect(out);
+
             source.start(audioNow);
         }
-        
-        function playClash() {
-            if (!audioCtx || isMuted) return;
-            
-            const duration = 0.28;
-            const buffer = audioCtx.createBuffer(1, Math.floor(audioCtx.sampleRate * duration), audioCtx.sampleRate);
-            const data = buffer.getChannelData(0);
-            for (let i = 0; i < data.length; i++) {
-                data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / data.length, 0.6);
-            }
-            
+
+        // Variant 2: sharp "hyun" swish — narrow bandpass swept up then down
+        function whooshSwish(velocity, out) {
+            const duration = 0.32;
             const source = audioCtx.createBufferSource();
-            source.buffer = buffer;
-            
+            source.buffer = makeNoiseBuffer(duration, 0.8);
+
             const filter = audioCtx.createBiquadFilter();
             filter.type = 'bandpass';
-            filter.frequency.value = 420;
-            filter.Q.value = 2.8;
-            
-            const gain = audioCtx.createGain();
-            gain.gain.value = 0.7;
-            
+            filter.Q.value = 6.5;
+
             const audioNow = audioCtx.currentTime;
-            gain.gain.setValueAtTime(0.7, audioNow);
-            gain.gain.linearRampToValueAtTime(0.001, audioNow + 0.22);
-            
+            const peak = Math.min(3600, 1200 + velocity * 420);
+            filter.frequency.setValueAtTime(550, audioNow);
+            filter.frequency.exponentialRampToValueAtTime(peak, audioNow + duration * 0.38);
+            filter.frequency.exponentialRampToValueAtTime(480, audioNow + duration);
+
+            const gain = audioCtx.createGain();
+            const vol = Math.min(0.8, 0.28 + velocity * 0.08);
+            gain.gain.setValueAtTime(vol, audioNow);
+            gain.gain.linearRampToValueAtTime(0.001, audioNow + duration);
+
             source.connect(filter);
             filter.connect(gain);
-            gain.connect(audioCtx.destination);
+            gain.connect(out);
+
             source.start(audioNow);
+        }
+
+        // Variant 3: heavy "buon" — low sawtooth sweep + dark noise body
+        function whooshHeavy(velocity, out) {
+            const audioNow = audioCtx.currentTime;
+            const duration = 0.4;
+
+            const osc = audioCtx.createOscillator();
+            osc.type = 'sawtooth';
+            osc.frequency.setValueAtTime(Math.min(340, 180 + velocity * 30), audioNow);
+            osc.frequency.exponentialRampToValueAtTime(65, audioNow + duration * 0.85);
+
+            const oscFilter = audioCtx.createBiquadFilter();
+            oscFilter.type = 'lowpass';
+            oscFilter.frequency.value = 520;
+
+            const oscGain = audioCtx.createGain();
+            oscGain.gain.setValueAtTime(0.32, audioNow);
+            oscGain.gain.linearRampToValueAtTime(0.001, audioNow + duration);
+
+            osc.connect(oscFilter);
+            oscFilter.connect(oscGain);
+            oscGain.connect(out);
+            osc.start(audioNow);
+            osc.stop(audioNow + duration);
+
+            const noise = audioCtx.createBufferSource();
+            noise.buffer = makeNoiseBuffer(duration);
+            const noiseFilter = audioCtx.createBiquadFilter();
+            noiseFilter.type = 'lowpass';
+            noiseFilter.frequency.value = 900;
+            const noiseGain = audioCtx.createGain();
+            noiseGain.gain.setValueAtTime(0.28, audioNow);
+            noiseGain.gain.linearRampToValueAtTime(0.001, audioNow + duration);
+
+            noise.connect(noiseFilter);
+            noiseFilter.connect(noiseGain);
+            noiseGain.connect(out);
+            noise.start(audioNow);
+        }
+        
+        // Metallic "clang" when the two markers collide
+        function playImpact(intensity, pan = 0) {
+            if (!audioCtx || isMuted) return;
+
+            const out = makePanner(pan);
+            const audioNow = audioCtx.currentTime;
+            const level = Math.min(0.9, 0.35 + intensity * 0.3);
+
+            // Inharmonic metallic partials
+            const partials = [420, 637, 1042, 1665, 2310];
+            partials.forEach((f, i) => {
+                const osc = audioCtx.createOscillator();
+                osc.type = 'triangle';
+                osc.frequency.value = f * (0.96 + Math.random() * 0.08);
+
+                const g = audioCtx.createGain();
+                const partialLevel = level / (i + 1.5);
+                g.gain.setValueAtTime(partialLevel, audioNow);
+                g.gain.exponentialRampToValueAtTime(0.001, audioNow + 0.22 + i * 0.05);
+
+                osc.connect(g);
+                g.connect(out);
+                osc.start(audioNow);
+                osc.stop(audioNow + 0.5);
+            });
+
+            // Bright spark noise on top
+            const noise = audioCtx.createBufferSource();
+            noise.buffer = makeNoiseBuffer(0.09, 1.0);
+            const hp = audioCtx.createBiquadFilter();
+            hp.type = 'highpass';
+            hp.frequency.value = 2400;
+            const ng = audioCtx.createGain();
+            ng.gain.setValueAtTime(level * 0.7, audioNow);
+            ng.gain.linearRampToValueAtTime(0.001, audioNow + 0.09);
+            noise.connect(hp);
+            hp.connect(ng);
+            ng.connect(out);
+            noise.start(audioNow);
+        }
+
+        // Special move: rising charge sweep then a deep boom
+        function playSpecial(pan = 0) {
+            if (!audioCtx || isMuted) return;
+
+            const out = makePanner(pan);
+            const audioNow = audioCtx.currentTime;
+
+            // Charge-up sweep
+            const sweep = audioCtx.createOscillator();
+            sweep.type = 'sawtooth';
+            sweep.frequency.setValueAtTime(180, audioNow);
+            sweep.frequency.exponentialRampToValueAtTime(980, audioNow + 0.3);
+
+            const sweepFilter = audioCtx.createBiquadFilter();
+            sweepFilter.type = 'lowpass';
+            sweepFilter.frequency.setValueAtTime(600, audioNow);
+            sweepFilter.frequency.exponentialRampToValueAtTime(3200, audioNow + 0.3);
+
+            const sweepGain = audioCtx.createGain();
+            sweepGain.gain.setValueAtTime(0.001, audioNow);
+            sweepGain.gain.exponentialRampToValueAtTime(0.4, audioNow + 0.22);
+            sweepGain.gain.linearRampToValueAtTime(0.001, audioNow + 0.34);
+
+            sweep.connect(sweepFilter);
+            sweepFilter.connect(sweepGain);
+            sweepGain.connect(out);
+            sweep.start(audioNow);
+            sweep.stop(audioNow + 0.36);
+
+            // Boom
+            const boomAt = audioNow + 0.3;
+            const boom = audioCtx.createOscillator();
+            boom.type = 'sine';
+            boom.frequency.setValueAtTime(170, boomAt);
+            boom.frequency.exponentialRampToValueAtTime(42, boomAt + 0.5);
+
+            const boomGain = audioCtx.createGain();
+            boomGain.gain.setValueAtTime(0.85, boomAt);
+            boomGain.gain.exponentialRampToValueAtTime(0.001, boomAt + 0.55);
+
+            boom.connect(boomGain);
+            boomGain.connect(out);
+            boom.start(boomAt);
+            boom.stop(boomAt + 0.6);
+
+            // Explosion noise layer
+            const noise = audioCtx.createBufferSource();
+            noise.buffer = makeNoiseBuffer(0.5, 0.9);
+            const lp = audioCtx.createBiquadFilter();
+            lp.type = 'lowpass';
+            lp.frequency.setValueAtTime(2600, boomAt);
+            lp.frequency.exponentialRampToValueAtTime(300, boomAt + 0.45);
+            const ng = audioCtx.createGain();
+            ng.gain.setValueAtTime(0.6, boomAt);
+            ng.gain.linearRampToValueAtTime(0.001, boomAt + 0.5);
+            noise.connect(lp);
+            lp.connect(ng);
+            ng.connect(out);
+            noise.start(boomAt);
         }
         
         function findColorCentroid(imageData, targetR, targetG, targetB, tolerance = 68) {
@@ -302,11 +465,33 @@
             };
         }
         
+        // How much of a full circle the recent motion path covers (1.0 = full turn)
+        function computeWinding(history) {
+            let total = 0;
+            let prevAngle = null;
+            for (let i = 1; i < history.length; i++) {
+                const dx = history[i].x - history[i - 1].x;
+                const dy = history[i].y - history[i - 1].y;
+                if (Math.hypot(dx, dy) < 2.5) continue; // skip jitter
+                const ang = Math.atan2(dy, dx);
+                if (prevAngle !== null) {
+                    let d = ang - prevAngle;
+                    while (d > Math.PI) d -= Math.PI * 2;
+                    while (d < -Math.PI) d += Math.PI * 2;
+                    total += d;
+                }
+                prevAngle = ang;
+            }
+            return Math.abs(total) / (Math.PI * 2);
+        }
+
         function updateTracker(trackerKey, newBlob, dt) {
             const t = trackers[trackerKey];
             if (!newBlob) {
                 t.active = false;
                 t.vel = 0;
+                t.history.length = 0;
+                t.charge = 0;
                 return;
             }
             
@@ -329,9 +514,50 @@
             const speed = Math.hypot(dx, dy) / Math.max(dt, 0.016);
             
             t.vel = t.vel * 0.6 + speed * 0.4; // smooth velocity
-            
+
             t.prevX = t.x;
             t.prevY = t.y;
+
+            // Record path for circle-gesture (special move) detection
+            const now = performance.now();
+            t.history.push({ x: t.x, y: t.y, time: now });
+            while (t.history.length && now - t.history[0].time > 950) {
+                t.history.shift();
+            }
+            t.charge = Math.min(1, computeWinding(t.history));
+        }
+
+        function spawnParticles(x, y, count, colorStr, speedScale = 1) {
+            for (let i = 0; i < count; i++) {
+                const ang = Math.random() * Math.PI * 2;
+                const spd = (30 + Math.random() * 120) * speedScale;
+                particles.push({
+                    x, y,
+                    vx: Math.cos(ang) * spd,
+                    vy: Math.sin(ang) * spd,
+                    life: 1,
+                    decay: 1.4 + Math.random() * 1.6,
+                    size: 1.5 + Math.random() * 2.5,
+                    color: colorStr
+                });
+            }
+        }
+
+        function triggerSpecial(playerKey) {
+            const t = trackers[playerKey];
+            const now = performance.now();
+            t.lastSpecial = now;
+            t.specialFlashUntil = now + 900;
+            t.history.length = 0;
+            t.charge = 0;
+
+            const pan = currentMode === 'duel' ? (playerKey === 'red' ? -0.65 : 0.65) : 0;
+            playSpecial(pan);
+
+            const colorStr = playerKey === 'red' ? '255,107,107' : '96,165,250';
+            spawnParticles(t.x, t.y, 46, colorStr, 1.6);
+            screenFlash.alpha = 0.45;
+            screenFlash.color = colorStr;
         }
         
         function processFrame() {
@@ -373,14 +599,48 @@
                 playWhoosh(blueSpeed / 28, 'blue', 0.65);
             }
             
-            // Clash detection (both fast and close)
+            // Special move: draw a full circle within ~1 second to fire
+            for (const key of ['red', 'blue']) {
+                if (key === 'blue' && currentMode !== 'duel') continue;
+                const t = trackers[key];
+                if (t.active && t.charge >= 0.92 && now - t.lastSpecial > 3000) {
+                    triggerSpecial(key);
+                }
+            }
+
+            // Impact: the two markers rushing into each other
             if (currentMode === 'duel' && trackers.red.active && trackers.blue.active) {
                 const dx = trackers.red.x - trackers.blue.x;
                 const dy = trackers.red.y - trackers.blue.y;
                 const dist = Math.hypot(dx, dy);
-                if (dist < 95 && redSpeed > 55 && blueSpeed > 55) {
-                    playClash();
+
+                if (prevPairDist !== null) {
+                    const approach = (prevPairDist - dist) / Math.max(dt, 0.016);
+                    if (dist < 48 && approach > 65 && now - lastImpact > 280) {
+                        lastImpact = now;
+                        const intensity = Math.min(1.6, approach / 130);
+                        playImpact(intensity, 0);
+                        const midX = (trackers.red.x + trackers.blue.x) / 2;
+                        const midY = (trackers.red.y + trackers.blue.y) / 2;
+                        spawnParticles(midX, midY, Math.round(14 + intensity * 16), '255,235,150', 1 + intensity * 0.5);
+                        screenFlash.alpha = Math.max(screenFlash.alpha, 0.12 + intensity * 0.12);
+                        screenFlash.color = '255,240,200';
+                    }
                 }
+                prevPairDist = dist;
+            } else {
+                prevPairDist = null;
+            }
+
+            // Update particles (analysis-space physics)
+            for (let i = particles.length - 1; i >= 0; i--) {
+                const p = particles[i];
+                p.x += p.vx * dt;
+                p.y += p.vy * dt;
+                p.vx *= 0.96;
+                p.vy = p.vy * 0.96 + 60 * dt; // slight gravity
+                p.life -= p.decay * dt;
+                if (p.life <= 0) particles.splice(i, 1);
             }
             
             // === DRAW ===
@@ -400,6 +660,34 @@
             drawTracker('red', scaleX, scaleY);
             if (currentMode === 'duel') {
                 drawTracker('blue', scaleX, scaleY);
+            }
+
+            // Draw particles
+            for (const p of particles) {
+                ctx.fillStyle = `rgba(${p.color},${Math.max(0, p.life)})`;
+                ctx.beginPath();
+                ctx.arc(p.x * scaleX, p.y * scaleY, p.size * (scaleX + scaleY) / 2 * 0.8, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // Special move banner
+            for (const key of ['red', 'blue']) {
+                const t = trackers[key];
+                if (now < t.specialFlashUntil) {
+                    const remain = (t.specialFlashUntil - now) / 900;
+                    ctx.fillStyle = `rgba(255,255,255,${Math.min(1, remain * 1.6)})`;
+                    ctx.font = `bold ${Math.round(30 + (1 - remain) * 26)}px "Noto Sans JP", system-ui, sans-serif`;
+                    ctx.textAlign = 'center';
+                    const label = key === 'red' ? '⚡ P1 必殺技!!' : '⚡ P2 必殺技!!';
+                    ctx.fillText(label, canvas.width / 2, canvas.height * (key === 'red' ? 0.4 : 0.55));
+                }
+            }
+
+            // Screen flash
+            if (screenFlash.alpha > 0.005) {
+                ctx.fillStyle = `rgba(${screenFlash.color},${screenFlash.alpha})`;
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                screenFlash.alpha *= Math.pow(0.02, dt); // fast decay
             }
             
             // Status text
@@ -460,6 +748,15 @@
             ctx.arc(drawX, drawY, Math.max(3.5, glowSize * 0.35), 0, Math.PI * 2);
             ctx.fill();
             
+            // Special-move charge ring (fills as you draw a circle)
+            if (t.charge > 0.15) {
+                ctx.strokeStyle = key === 'red' ? 'rgba(255,210,90,0.9)' : 'rgba(150,220,255,0.9)';
+                ctx.lineWidth = 3.5;
+                ctx.beginPath();
+                ctx.arc(drawX, drawY, glowSize + 13, -Math.PI / 2, -Math.PI / 2 + t.charge * Math.PI * 2);
+                ctx.stroke();
+            }
+
             // Label
             ctx.fillStyle = '#fff';
             ctx.font = 'bold 11px "Noto Sans JP", system-ui, sans-serif';
