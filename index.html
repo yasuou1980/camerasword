@@ -172,8 +172,8 @@
         
         // Tracking state
         let trackers = {
-            red: { x: 0, y: 0, prevX: 0, prevY: 0, vel: 0, size: 0, active: false, lastTrigger: 0, history: [], charge: 0, lastSpecial: 0, specialFlashUntil: 0, color: {r:235, g:55, b:55} },
-            blue: { x: 0, y: 0, prevX: 0, prevY: 0, vel: 0, size: 0, active: false, lastTrigger: 0, history: [], charge: 0, lastSpecial: 0, specialFlashUntil: 0, color: {r:70, g:130, b:235} }
+            red: { x: 0, y: 0, prevX: 0, prevY: 0, vel: 0, dirX: 0, wasFast: false, size: 0, active: false, lastTrigger: 0, history: [], charge: 0, lastSpecial: 0, specialFlashUntil: 0, color: {r:235, g:55, b:55} },
+            blue: { x: 0, y: 0, prevX: 0, prevY: 0, vel: 0, dirX: 0, wasFast: false, size: 0, active: false, lastTrigger: 0, history: [], charge: 0, lastSpecial: 0, specialFlashUntil: 0, color: {r:70, g:130, b:235} }
         };
 
         // Effects state
@@ -198,10 +198,49 @@
             analysisCanvas.height = analysisH;
         }
         
+        let master = null; // { input, reverb }
+
+        // Exponentially decaying stereo noise = simple hall impulse response
+        function makeImpulseResponse(duration, decay) {
+            const rate = audioCtx.sampleRate;
+            const len = Math.floor(rate * duration);
+            const buffer = audioCtx.createBuffer(2, len, rate);
+            for (let ch = 0; ch < 2; ch++) {
+                const data = buffer.getChannelData(ch);
+                for (let i = 0; i < len; i++) {
+                    data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, decay);
+                }
+            }
+            return buffer;
+        }
+
         function initAudio() {
             if (audioCtx) return;
             try {
                 audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+                // Master bus: everything runs through a compressor (glue +
+                // no clipping when layers stack) and a shared reverb send
+                const compressor = audioCtx.createDynamicsCompressor();
+                compressor.threshold.value = -18;
+                compressor.knee.value = 12;
+                compressor.ratio.value = 4;
+                compressor.attack.value = 0.004;
+                compressor.release.value = 0.18;
+                compressor.connect(audioCtx.destination);
+
+                const input = audioCtx.createGain();
+                input.gain.value = 0.9;
+                input.connect(compressor);
+
+                const convolver = audioCtx.createConvolver();
+                convolver.buffer = makeImpulseResponse(1.9, 2.8);
+                const wet = audioCtx.createGain();
+                wet.gain.value = 0.9;
+                convolver.connect(wet);
+                wet.connect(compressor);
+
+                master = { input, reverb: convolver };
             } catch(e) {}
         }
         
@@ -216,22 +255,33 @@
             return buffer;
         }
 
-        function makePanner(pan) {
+        // Output node with dry signal to the master bus plus a reverb send.
+        // reverbAmount ~0.1 = dry-ish swing, ~0.4 = ringing cinematic tail.
+        function makePanner(pan, reverbAmount = 0.16) {
             const panner = audioCtx.createStereoPanner();
             panner.pan.value = Math.max(-0.9, Math.min(0.9, pan));
-            panner.connect(audioCtx.destination);
+            panner.connect(master.input);
+            if (reverbAmount > 0) {
+                const send = audioCtx.createGain();
+                send.gain.value = reverbAmount;
+                panner.connect(send);
+                send.connect(master.reverb);
+            }
             return panner;
         }
 
-        function playWhoosh(velocity, playerKey, pan = 0) {
+        function playWhoosh(velocity, playerKey, pan = 0, dir = 0) {
             if (!audioCtx || isMuted) return;
 
             const tracker = trackers[playerKey];
             const now = performance.now();
-            if (now - tracker.lastTrigger < 90) return;
+            if (now - tracker.lastTrigger < 110) return;
             tracker.lastTrigger = now;
 
-            const out = makePanner(pan);
+            // Doppler-style pan sweep: the sound travels in the swing direction
+            const clampPan = v => Math.max(-0.9, Math.min(0.9, v));
+            const out = makePanner(clampPan(pan - dir * 0.35));
+            out.pan.linearRampToValueAtTime(clampPan(pan + dir * 0.35), audioCtx.currentTime + 0.32);
 
             switch (soundTheme) {
                 case 'beam': beamSwing(velocity, out); break;
@@ -354,9 +404,30 @@
             noise.start(audioNow);
         }
         
+        // Sharp transient at the very front of a hit — what makes an
+        // impact feel physical instead of synthetic
+        function transientClick(out, level) {
+            const t0 = audioCtx.currentTime;
+            const click = audioCtx.createBufferSource();
+            click.buffer = makeNoiseBuffer(0.012, 1.0);
+            const hp = audioCtx.createBiquadFilter();
+            hp.type = 'highpass';
+            hp.frequency.value = 3800;
+            const g = audioCtx.createGain();
+            g.gain.setValueAtTime(level, t0);
+            g.gain.linearRampToValueAtTime(0.001, t0 + 0.012);
+            click.connect(hp);
+            hp.connect(g);
+            g.connect(out);
+            click.start(t0);
+        }
+
         function playImpact(intensity, pan = 0) {
             if (!audioCtx || isMuted) return;
-            const out = makePanner(pan);
+            // Hits get a long reverb tail — the ring in the room sells it
+            const reverb = soundTheme === 'samurai' ? 0.45 : 0.28;
+            const out = makePanner(pan, reverb);
+            transientClick(out, Math.min(0.8, 0.4 + intensity * 0.3));
             switch (soundTheme) {
                 case 'beam': beamImpact(intensity, out); break;
                 case 'samurai': samuraiImpact(intensity, out); break;
@@ -367,7 +438,7 @@
 
         function playSpecial(pan = 0) {
             if (!audioCtx || isMuted) return;
-            const out = makePanner(pan);
+            const out = makePanner(pan, 0.38);
             switch (soundTheme) {
                 case 'beam': beamSpecial(out); break;
                 case 'samurai': samuraiSpecial(out); break;
@@ -483,9 +554,9 @@
             gain.gain.value = 0;
             const filter = audioCtx.createBiquadFilter();
             filter.type = 'lowpass';
-            filter.frequency.value = 750;
-            filter.Q.value = 2.5;
-            const panner = audioCtx.createStereoPanner();
+            filter.frequency.value = 620;
+            filter.Q.value = 2;
+            const panner = makePanner(0, 0.07);
 
             // Two detuned saws beating against each other = electric hum
             const baseF = key === 'red' ? 66 : 58;
@@ -499,14 +570,33 @@
                 return o;
             });
 
+            // Sub sine an octave down: body without harshness
+            const sub = audioCtx.createOscillator();
+            sub.type = 'sine';
+            sub.frequency.value = baseF / 2;
+            const subGain = audioCtx.createGain();
+            subGain.gain.value = 0.6;
+            sub.connect(subGain);
+            subGain.connect(filter);
+            sub.start();
+
+            // Slow amplitude wobble so the idle hum feels alive, not static
+            const lfo = audioCtx.createOscillator();
+            lfo.type = 'sine';
+            lfo.frequency.value = 5.2;
+            const lfoDepth = audioCtx.createGain();
+            lfoDepth.gain.value = 0.006;
+            lfo.connect(lfoDepth);
+            lfoDepth.connect(gain.gain);
+            lfo.start();
+
             filter.connect(gain);
             gain.connect(panner);
-            panner.connect(audioCtx.destination);
-            humState[key] = { oscs, gain, panner, baseF };
+            humState[key] = { oscs, sub, gain, panner, baseF };
         }
 
         function updateHums() {
-            if (!audioCtx) return;
+            if (!audioCtx || !master) return;
             const tc = audioCtx.currentTime;
             for (const key of ['red', 'blue']) {
                 const t = trackers[key];
@@ -516,11 +606,14 @@
                 const h = humState[key];
                 if (!h) continue;
 
-                const target = shouldPlay ? Math.min(0.2, 0.055 + t.vel * 0.0011) : 0;
-                h.gain.gain.setTargetAtTime(target, tc, 0.08);
+                // Barely audible at rest; swells only while actually swinging
+                const motion = Math.max(0, t.vel - 25);
+                const target = shouldPlay ? Math.min(0.11, 0.016 + motion * 0.0009) : 0;
+                h.gain.gain.setTargetAtTime(target, tc, shouldPlay ? 0.05 : 0.12);
                 // Doppler-ish pitch rise while swinging
                 const freq = h.baseF * (1 + Math.min(t.vel, 260) * 0.0022);
                 h.oscs.forEach(o => o.frequency.setTargetAtTime(freq, tc, 0.06));
+                h.sub.frequency.setTargetAtTime(freq / 2, tc, 0.06);
                 h.panner.pan.setTargetAtTime(
                     currentMode === 'duel' ? (key === 'red' ? -0.5 : 0.5) : 0, tc, 0.2);
             }
@@ -596,6 +689,17 @@
             buzzG.connect(out);
             buzz.start(t0);
             buzz.stop(t0 + 0.4);
+
+            // Rapid flutter on the buzz = unstable colliding energy
+            const flutter = audioCtx.createOscillator();
+            flutter.type = 'square';
+            flutter.frequency.value = 31;
+            const flutterDepth = audioCtx.createGain();
+            flutterDepth.gain.value = level * 0.25;
+            flutter.connect(flutterDepth);
+            flutterDepth.connect(buzzG.gain);
+            flutter.start(t0);
+            flutter.stop(t0 + 0.4);
 
             const fizz = audioCtx.createBufferSource();
             fizz.buffer = makeNoiseBuffer(0.3, 0.9);
@@ -686,27 +790,31 @@
         function samuraiSwing(velocity, out) {
             const t0 = audioCtx.currentTime;
             const dur = 0.16 + Math.min(velocity * 0.012, 0.09);
-
-            const noise = audioCtx.createBufferSource();
-            noise.buffer = makeNoiseBuffer(dur, 0.7);
-            const bp = audioCtx.createBiquadFilter();
-            bp.type = 'bandpass';
-            bp.Q.value = 3.8;
             const peak = Math.min(7200, 4600 + velocity * 380);
-            bp.frequency.setValueAtTime(2600, t0);
-            bp.frequency.exponentialRampToValueAtTime(peak, t0 + dur * 0.45);
-            bp.frequency.exponentialRampToValueAtTime(2900, t0 + dur);
-
-            const g = audioCtx.createGain();
             const vol = Math.min(0.7, 0.2 + velocity * 0.09);
-            g.gain.setValueAtTime(0.001, t0);
-            g.gain.exponentialRampToValueAtTime(vol, t0 + dur * 0.3);
-            g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
 
-            noise.connect(bp);
-            bp.connect(g);
-            g.connect(out);
-            noise.start(t0);
+            // Two formant layers with offset sweeps — a single bandpass
+            // sounds synthetic, two moving together sound like a blade
+            [[1, 1], [1.65, 0.4]].forEach(([mult, mix]) => {
+                const noise = audioCtx.createBufferSource();
+                noise.buffer = makeNoiseBuffer(dur, 0.7);
+                const bp = audioCtx.createBiquadFilter();
+                bp.type = 'bandpass';
+                bp.Q.value = 3.8;
+                bp.frequency.setValueAtTime(2600 * mult * 0.55, t0);
+                bp.frequency.exponentialRampToValueAtTime(Math.min(11000, peak * mult), t0 + dur * 0.45);
+                bp.frequency.exponentialRampToValueAtTime(2900 * mult * 0.6, t0 + dur);
+
+                const g = audioCtx.createGain();
+                g.gain.setValueAtTime(0.001, t0);
+                g.gain.exponentialRampToValueAtTime(vol * mix, t0 + dur * 0.3);
+                g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+
+                noise.connect(bp);
+                bp.connect(g);
+                g.connect(out);
+                noise.start(t0);
+            });
 
             // Body of the cut on strong swings
             if (velocity > 3) {
@@ -737,26 +845,12 @@
                 osc.frequency.value = f * (0.985 + Math.random() * 0.03);
                 const g = audioCtx.createGain();
                 g.gain.setValueAtTime(level * 0.5 / (i + 1.2), t0);
-                g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.55 + i * 0.09);
+                g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.75 + i * 0.13);
                 osc.connect(g);
                 g.connect(out);
                 osc.start(t0);
-                osc.stop(t0 + 1.1);
+                osc.stop(t0 + 1.6);
             });
-
-            // Attack click
-            const click = audioCtx.createBufferSource();
-            click.buffer = makeNoiseBuffer(0.035, 1.0);
-            const hp = audioCtx.createBiquadFilter();
-            hp.type = 'highpass';
-            hp.frequency.value = 3200;
-            const cg = audioCtx.createGain();
-            cg.gain.setValueAtTime(level, t0);
-            cg.gain.linearRampToValueAtTime(0.001, t0 + 0.035);
-            click.connect(hp);
-            hp.connect(cg);
-            cg.connect(out);
-            click.start(t0);
 
             // Low thud of the clash
             const thud = audioCtx.createOscillator();
@@ -1078,6 +1172,9 @@
             const speed = Math.hypot(dx, dy) / Math.max(dt, 0.016);
             
             t.vel = t.vel * 0.6 + speed * 0.4; // smooth velocity
+            if (Math.abs(dx) > 0.8) {
+                t.dirX = t.dirX * 0.5 + Math.sign(dx) * 0.5; // smoothed horizontal swing direction
+            }
 
             t.prevX = t.x;
             t.prevY = t.y;
@@ -1153,17 +1250,21 @@
             // Continuous beam hum follows marker state every frame
             updateHums();
 
-            // Sound triggers
+            // Sound triggers — one shot at the START of each swing (edge
+            // trigger), re-armed after slowing down or 420ms of sustain.
+            // Continuous retriggering sounded like a machine gun.
             const redSpeed = trackers.red.vel;
             const blueSpeed = trackers.blue.vel;
-            
-            if (redSpeed > 42 && trackers.red.active) {
-                const pan = currentMode === 'duel' ? -0.65 : 0;
-                playWhoosh(redSpeed / 28, 'red', pan);
-            }
-            
-            if (currentMode === 'duel' && blueSpeed > 42 && trackers.blue.active) {
-                playWhoosh(blueSpeed / 28, 'blue', 0.65);
+
+            for (const key of ['red', 'blue']) {
+                if (key === 'blue' && currentMode !== 'duel') continue;
+                const t = trackers[key];
+                const fast = t.active && t.vel > 42;
+                if (fast && (!t.wasFast || now - t.lastTrigger > 420)) {
+                    const basePan = currentMode === 'duel' ? (key === 'red' ? -0.55 : 0.55) : 0;
+                    playWhoosh(t.vel / 28, key, basePan, t.dirX);
+                }
+                t.wasFast = t.active && t.vel > 30;
             }
             
             // Special move: draw a full circle within ~1 second to fire
