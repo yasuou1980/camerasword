@@ -28,3 +28,12 @@ https://yasuou1980.github.io/camerasword/
 python3 -m http.server 8000
 # → http://localhost:8000 を開く
 ```
+
+## サウンドクレジット
+
+🎬リアルテーマの効果音は以下のフリー素材を加工して埋め込んでいます：
+
+- whoosh / punch / boom — [pygame](https://www.pygame.org/) examples data（パブリックドメイン）
+- hit / rock / riser / explosion — [Kenney.nl](https://kenney.nl/)（CC0）、[Python Arcade](https://api.arcade.academy/) 同梱版より
+
+その他のテーマ（ビーム／サムライ／ヒーロー／ノーマル）はWeb Audio APIによるリアルタイム合成です。
