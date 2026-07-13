@@ -128,7 +128,7 @@
         <h1>📹 カメラで振る棒 対戦</h1>
         <div class="controls">
             <button id="themeBtn">🎬リアル</button>
-            <button id="modeBtn">2人対戦モード</button>
+            <button id="modeBtn">2人対戦</button>
             <button id="cameraBtn">📷</button>
             <button id="muteBtn">🔊</button>
         </div>
@@ -142,10 +142,10 @@
     
     <div class="info" id="infoBox">
         <strong>使い方</strong><br>
-        1. 棒の<strong>先端</strong>に明るい色のテープやマーカーを貼る（<span style="color:#ff6b6b">赤</span> or <span style="color:#60a5fa">青</span>がおすすめ）<br>
+        1. 棒の<strong>先端</strong>に明るい色のテープやマーカーを貼る（<span style="color:#ff6b6b">赤</span>・<span style="color:#60a5fa">青</span>・<span style="color:#e6d228">黄</span>・<span style="color:#3cc85a">緑</span>・<span style="color:#a046d2">紫</span>）<br>
         2. カメラにかざして振る → 速さに応じていろんな効果音が鳴ります<br>
         3. 棒で<strong>大きく円を描く</strong>とリングが溜まって ⚡必殺技！<br>
-        4. 2人対戦モードで2本の棒を<strong>ぶつけ合う</strong>と衝撃音＆火花！<br>
+        4. 対戦人数ボタンで1〜5人モードを切替。複数本の棒を<strong>ぶつけ合う</strong>と衝撃音＆火花！<br>
         5. <strong>⚡ボタン</strong>で音のテーマを切替：ビーム / サムライ / ヒーロー / ノーマル
     </div>
 
@@ -159,7 +159,44 @@
         
         let audioCtx = null;
         let isMuted = false;
-        let currentMode = 'duel'; // 'single' or 'duel'
+        let playerCount = 2; // 1–5 active players
+
+        const PLAYER_COLORS = [
+            ['red',    { r: 235, g: 55,  b: 55  }, { fill: '#ff6b6b', trail: 'rgba(255,90,90,0.35)',  glowFast: 'rgba(255,80,80,0.3)',  glowSlow: 'rgba(255,100,100,0.18)', ring: 'rgba(255,210,90,0.9)',  particles: '255,107,107', labelJa: '赤' }],
+            ['blue',   { r: 70,  g: 130, b: 235 }, { fill: '#60a5fa', trail: 'rgba(90,160,255,0.35)', glowFast: 'rgba(80,160,255,0.3)', glowSlow: 'rgba(100,170,255,0.18)', ring: 'rgba(150,220,255,0.9)', particles: '96,165,250',  labelJa: '青' }],
+            ['yellow', { r: 230, g: 210, b: 40  }, { fill: '#e6d228', trail: 'rgba(230,210,40,0.35)', glowFast: 'rgba(230,200,30,0.3)', glowSlow: 'rgba(230,210,50,0.18)', ring: 'rgba(255,240,120,0.9)', particles: '230,210,40',  labelJa: '黄' }],
+            ['green',  { r: 60,  g: 200, b: 90  }, { fill: '#3cc85a', trail: 'rgba(60,200,90,0.35)',  glowFast: 'rgba(50,190,80,0.3)',  glowSlow: 'rgba(70,210,100,0.18)', ring: 'rgba(150,255,180,0.9)', particles: '60,200,90',   labelJa: '緑' }],
+            ['purple', { r: 160, g: 70,  b: 210 }, { fill: '#a046d2', trail: 'rgba(160,70,210,0.35)', glowFast: 'rgba(150,60,200,0.3)', glowSlow: 'rgba(170,80,220,0.18)', ring: 'rgba(210,150,255,0.9)', particles: '160,70,210',  labelJa: '紫' }]
+        ];
+        const COLOR_TOLERANCE = { red: 65, blue: 72, yellow: 68, green: 68, purple: 70 };
+
+        function createTracker(color) {
+            return { x: 0, y: 0, prevX: 0, prevY: 0, vel: 0, dirX: 0, wasFast: false, size: 0, active: false,
+                lastTrigger: 0, history: [], charge: 0, lastSpecial: 0, specialFlashUntil: 0, color };
+        }
+
+        function getActiveKeys() {
+            return PLAYER_COLORS.slice(0, playerCount).map(([key]) => key);
+        }
+
+        function getPlayerIndex(key) {
+            return getActiveKeys().indexOf(key);
+        }
+
+        function getPlayerPan(key) {
+            const keys = getActiveKeys();
+            const idx = keys.indexOf(key);
+            if (idx < 0 || keys.length <= 1) return 0;
+            return -0.8 + idx * (1.6 / (keys.length - 1));
+        }
+
+        function pairKey(a, b) {
+            return a < b ? `${a}-${b}` : `${b}-${a}`;
+        }
+
+        function getPlayerStyle(key) {
+            return PLAYER_COLORS.find(([k]) => k === key)[2];
+        }
 
         // Sound themes: real (recorded samples) / beam (lightsaber-style) /
         // samurai (katana) / hero (sci-fi) / standard
@@ -223,14 +260,13 @@
         }
         
         // Tracking state
-        let trackers = {
-            red: { x: 0, y: 0, prevX: 0, prevY: 0, vel: 0, dirX: 0, wasFast: false, size: 0, active: false, lastTrigger: 0, history: [], charge: 0, lastSpecial: 0, specialFlashUntil: 0, color: {r:235, g:55, b:55} },
-            blue: { x: 0, y: 0, prevX: 0, prevY: 0, vel: 0, dirX: 0, wasFast: false, size: 0, active: false, lastTrigger: 0, history: [], charge: 0, lastSpecial: 0, specialFlashUntil: 0, color: {r:70, g:130, b:235} }
-        };
+        let trackers = Object.fromEntries(
+            PLAYER_COLORS.map(([key, rgb]) => [key, createTracker({ ...rgb })])
+        );
 
         // Effects state
         let particles = []; // analysis-space coordinates
-        let prevPairDist = null;
+        let prevPairDists = {};
         let lastImpact = 0;
         let screenFlash = { alpha: 0, color: '255,255,255' };
         
@@ -662,9 +698,9 @@
         // ============ ⚡ BEAM theme (lightsaber-style energy blade) ============
 
         // Persistent low hum while a marker is visible — the signature beam sound
-        const humState = { red: null, blue: null };
+        const humState = {};
 
-        function ensureHum(key) {
+        function ensureHum(key, playerIndex) {
             if (!audioCtx || humState[key]) return;
             const gain = audioCtx.createGain();
             gain.gain.value = 0;
@@ -674,8 +710,7 @@
             filter.Q.value = 2;
             const panner = makePanner(0, 0.07);
 
-            // Two detuned saws beating against each other = electric hum
-            const baseF = key === 'red' ? 66 : 58;
+            const baseF = 66 - playerIndex * 4;
             const oscs = [0, 9].map(det => {
                 const o = audioCtx.createOscillator();
                 o.type = 'sawtooth';
@@ -714,24 +749,22 @@
         function updateHums() {
             if (!audioCtx || !master) return;
             const tc = audioCtx.currentTime;
-            for (const key of ['red', 'blue']) {
+            const activeKeys = getActiveKeys();
+            for (let i = 0; i < activeKeys.length; i++) {
+                const key = activeKeys[i];
                 const t = trackers[key];
-                const shouldPlay = soundTheme === 'beam' && !isMuted && t.active
-                    && (key === 'red' || currentMode === 'duel');
-                if (shouldPlay) ensureHum(key);
+                const shouldPlay = soundTheme === 'beam' && !isMuted && t.active;
+                if (shouldPlay) ensureHum(key, i);
                 const h = humState[key];
                 if (!h) continue;
 
-                // Barely audible at rest; swells only while actually swinging
                 const motion = Math.max(0, t.vel - 25);
                 const target = shouldPlay ? Math.min(0.11, 0.016 + motion * 0.0009) : 0;
                 h.gain.gain.setTargetAtTime(target, tc, shouldPlay ? 0.05 : 0.12);
-                // Doppler-ish pitch rise while swinging
                 const freq = h.baseF * (1 + Math.min(t.vel, 260) * 0.0022);
                 h.oscs.forEach(o => o.frequency.setTargetAtTime(freq, tc, 0.06));
                 h.sub.frequency.setTargetAtTime(freq / 2, tc, 0.06);
-                h.panner.pan.setTargetAtTime(
-                    currentMode === 'duel' ? (key === 'red' ? -0.5 : 0.5) : 0, tc, 0.2);
+                h.panner.pan.setTargetAtTime(getPlayerPan(key), tc, 0.2);
             }
         }
 
@@ -1377,10 +1410,10 @@
             t.history.length = 0;
             t.charge = 0;
 
-            const pan = currentMode === 'duel' ? (playerKey === 'red' ? -0.65 : 0.65) : 0;
+            const pan = getPlayerPan(playerKey);
             playSpecial(pan);
 
-            const colorStr = playerKey === 'red' ? '255,107,107' : '96,165,250';
+            const colorStr = getPlayerStyle(playerKey).particles;
             spawnParticles(t.x, t.y, 46, colorStr, 1.6);
             screenFlash.alpha = 0.45;
             screenFlash.color = colorStr;
@@ -1397,72 +1430,61 @@
             analysisCtx.drawImage(video, 0, 0, analysisW, analysisH);
             const imageData = analysisCtx.getImageData(0, 0, analysisW, analysisH);
             
-            // Track red
-            const redBlob = findColorCentroid(imageData, 
-                trackers.red.color.r, trackers.red.color.g, trackers.red.color.b, 65);
-            updateTracker('red', redBlob, dt);
-            
-            // Track blue (only in duel mode)
-            let blueBlob = null;
-            if (currentMode === 'duel') {
-                blueBlob = findColorCentroid(imageData,
-                    trackers.blue.color.r, trackers.blue.color.g, trackers.blue.color.b, 72);
-                updateTracker('blue', blueBlob, dt);
-            } else {
-                trackers.blue.active = false;
+            const activeKeys = getActiveKeys();
+
+            for (const key of activeKeys) {
+                const entry = PLAYER_COLORS.find(([k]) => k === key);
+                const rgb = entry[1];
+                const blob = findColorCentroid(imageData, rgb.r, rgb.g, rgb.b, COLOR_TOLERANCE[key]);
+                updateTracker(key, blob, dt);
+            }
+            for (const [key] of PLAYER_COLORS.slice(playerCount)) {
+                trackers[key].active = false;
             }
             
-            // Continuous beam hum follows marker state every frame
             updateHums();
 
-            // Sound triggers — one shot at the START of each swing (edge
-            // trigger), re-armed after slowing down or 420ms of sustain.
-            // Continuous retriggering sounded like a machine gun.
-            const redSpeed = trackers.red.vel;
-            const blueSpeed = trackers.blue.vel;
-
-            for (const key of ['red', 'blue']) {
-                if (key === 'blue' && currentMode !== 'duel') continue;
+            for (const key of activeKeys) {
                 const t = trackers[key];
                 const fast = t.active && t.vel > 42;
                 if (fast && (!t.wasFast || now - t.lastTrigger > 420)) {
-                    const basePan = currentMode === 'duel' ? (key === 'red' ? -0.55 : 0.55) : 0;
-                    playWhoosh(t.vel / 28, key, basePan, t.dirX);
+                    playWhoosh(t.vel / 28, key, getPlayerPan(key), t.dirX);
                 }
                 t.wasFast = t.active && t.vel > 30;
             }
             
-            // Special move: draw a full circle within ~1 second to fire
-            for (const key of ['red', 'blue']) {
-                if (key === 'blue' && currentMode !== 'duel') continue;
+            for (const key of activeKeys) {
                 const t = trackers[key];
                 if (t.active && t.charge >= 0.92 && now - t.lastSpecial > 3000) {
                     triggerSpecial(key);
                 }
             }
 
-            // Impact: the two markers rushing into each other
-            if (currentMode === 'duel' && trackers.red.active && trackers.blue.active) {
-                const dx = trackers.red.x - trackers.blue.x;
-                const dy = trackers.red.y - trackers.blue.y;
-                const dist = Math.hypot(dx, dy);
+            for (let i = 0; i < activeKeys.length; i++) {
+                for (let j = i + 1; j < activeKeys.length; j++) {
+                    const keyA = activeKeys[i], keyB = activeKeys[j];
+                    const ta = trackers[keyA], tb = trackers[keyB];
+                    if (!ta.active || !tb.active) continue;
 
-                if (prevPairDist !== null) {
-                    const approach = (prevPairDist - dist) / Math.max(dt, 0.016);
-                    if (dist < 48 && approach > 65 && now - lastImpact > 280) {
-                        lastImpact = now;
-                        const intensity = Math.min(1.6, approach / 130);
-                        playImpact(intensity, 0);
-                        const midX = (trackers.red.x + trackers.blue.x) / 2;
-                        const midY = (trackers.red.y + trackers.blue.y) / 2;
-                        spawnParticles(midX, midY, Math.round(14 + intensity * 16), '255,235,150', 1 + intensity * 0.5);
-                        screenFlash.alpha = Math.max(screenFlash.alpha, 0.12 + intensity * 0.12);
-                        screenFlash.color = '255,240,200';
+                    const dist = Math.hypot(ta.x - tb.x, ta.y - tb.y);
+                    const pk = pairKey(keyA, keyB);
+                    const prevDist = prevPairDists[pk];
+
+                    if (prevDist != null) {
+                        const approach = (prevDist - dist) / Math.max(dt, 0.016);
+                        if (dist < 48 && approach > 65 && now - lastImpact > 280) {
+                            lastImpact = now;
+                            const intensity = Math.min(1.6, approach / 130);
+                            playImpact(intensity, (getPlayerPan(keyA) + getPlayerPan(keyB)) / 2);
+                            const midX = (ta.x + tb.x) / 2;
+                            const midY = (ta.y + tb.y) / 2;
+                            spawnParticles(midX, midY, Math.round(14 + intensity * 16), '255,235,150', 1 + intensity * 0.5);
+                            screenFlash.alpha = Math.max(screenFlash.alpha, 0.12 + intensity * 0.12);
+                            screenFlash.color = '255,240,200';
+                        }
                     }
+                    prevPairDists[pk] = dist;
                 }
-                prevPairDist = dist;
-            } else {
-                prevPairDist = null;
             }
 
             // Update particles (analysis-space physics)
@@ -1490,9 +1512,8 @@
             const scaleY = canvas.height / analysisH;
             
             // Draw trackers
-            drawTracker('red', scaleX, scaleY);
-            if (currentMode === 'duel') {
-                drawTracker('blue', scaleX, scaleY);
+            for (const key of activeKeys) {
+                drawTracker(key, scaleX, scaleY);
             }
 
             // Draw particles
@@ -1504,15 +1525,16 @@
             }
 
             // Special move banner
-            for (const key of ['red', 'blue']) {
+            for (const key of activeKeys) {
                 const t = trackers[key];
                 if (now < t.specialFlashUntil) {
                     const remain = (t.specialFlashUntil - now) / 900;
+                    const idx = getPlayerIndex(key);
                     ctx.fillStyle = `rgba(255,255,255,${Math.min(1, remain * 1.6)})`;
                     ctx.font = `bold ${Math.round(30 + (1 - remain) * 26)}px "Noto Sans JP", system-ui, sans-serif`;
                     ctx.textAlign = 'center';
-                    const label = key === 'red' ? '⚡ P1 必殺技!!' : '⚡ P2 必殺技!!';
-                    ctx.fillText(label, canvas.width / 2, canvas.height * (key === 'red' ? 0.4 : 0.55));
+                    const yFrac = activeKeys.length <= 1 ? 0.47 : 0.32 + (idx / Math.max(1, activeKeys.length - 1)) * 0.36;
+                    ctx.fillText(`⚡ P${idx + 1} 必殺技!!`, canvas.width / 2, canvas.height * yFrac);
                 }
             }
 
@@ -1529,11 +1551,11 @@
             ctx.textAlign = 'left';
             
             let statusText = '';
-            if (trackers.red.active) {
-                statusText += `赤: ${Math.round(redSpeed)}px/s  `;
-            }
-            if (currentMode === 'duel' && trackers.blue.active) {
-                statusText += `青: ${Math.round(blueSpeed)}px/s`;
+            for (const key of activeKeys) {
+                const t = trackers[key];
+                if (t.active) {
+                    statusText += `${getPlayerStyle(key).labelJa}: ${Math.round(t.vel)}px/s  `;
+                }
             }
             if (statusText) {
                 ctx.fillText(statusText, 18, canvas.height - 22);
@@ -1545,6 +1567,8 @@
         function drawTracker(key, scaleX, scaleY) {
             const t = trackers[key];
             if (!t.active) return;
+            const style = getPlayerStyle(key);
+            const playerNum = getPlayerIndex(key) + 1;
             
             const drawX = t.x * scaleX;
             const drawY = t.y * scaleY;
@@ -1552,50 +1576,41 @@
             const speed = t.vel;
             const isFast = speed > 45;
             
-            // Motion trail (simple)
-            ctx.strokeStyle = key === 'red' ? 'rgba(255,90,90,0.35)' : 'rgba(90,160,255,0.35)';
+            ctx.strokeStyle = style.trail;
             ctx.lineWidth = 4;
             ctx.beginPath();
             ctx.moveTo(drawX, drawY);
             ctx.lineTo(drawX - (t.x - t.prevX) * scaleX * 2.2, drawY - (t.y - t.prevY) * scaleY * 2.2);
             ctx.stroke();
             
-            // Glow circle
             const glowSize = 11 + Math.min(speed / 9, 22);
-            ctx.fillStyle = key === 'red' 
-                ? (isFast ? 'rgba(255,80,80,0.3)' : 'rgba(255,100,100,0.18)')
-                : (isFast ? 'rgba(80,160,255,0.3)' : 'rgba(100,170,255,0.18)');
+            ctx.fillStyle = isFast ? style.glowFast : style.glowSlow;
             ctx.beginPath();
             ctx.arc(drawX, drawY, glowSize + 8, 0, Math.PI * 2);
             ctx.fill();
             
-            // Main orb
-            ctx.fillStyle = key === 'red' ? '#ff6b6b' : '#60a5fa';
+            ctx.fillStyle = style.fill;
             ctx.beginPath();
             ctx.arc(drawX, drawY, glowSize, 0, Math.PI * 2);
             ctx.fill();
             
-            // Core
             ctx.fillStyle = '#ffffff';
             ctx.beginPath();
             ctx.arc(drawX, drawY, Math.max(3.5, glowSize * 0.35), 0, Math.PI * 2);
             ctx.fill();
             
-            // Special-move charge ring (fills as you draw a circle)
             if (t.charge > 0.15) {
-                ctx.strokeStyle = key === 'red' ? 'rgba(255,210,90,0.9)' : 'rgba(150,220,255,0.9)';
+                ctx.strokeStyle = style.ring;
                 ctx.lineWidth = 3.5;
                 ctx.beginPath();
                 ctx.arc(drawX, drawY, glowSize + 13, -Math.PI / 2, -Math.PI / 2 + t.charge * Math.PI * 2);
                 ctx.stroke();
             }
 
-            // Label
             ctx.fillStyle = '#fff';
             ctx.font = 'bold 11px "Noto Sans JP", system-ui, sans-serif';
             ctx.textAlign = 'center';
-            const label = key === 'red' ? 'P1' : 'P2';
-            ctx.fillText(label, drawX, drawY - glowSize - 8);
+            ctx.fillText(`P${playerNum}`, drawX, drawY - glowSize - 8);
         }
         
         function loop() {
@@ -1645,13 +1660,18 @@
         }
 
         function toggleMode() {
-            currentMode = currentMode === 'duel' ? 'single' : 'duel';
+            playerCount = playerCount >= 5 ? 1 : playerCount + 1;
             const btn = document.getElementById('modeBtn');
-            btn.textContent = currentMode === 'duel' ? '2人対戦モード' : '1人モード';
-            
-            if (currentMode === 'single') {
-                trackers.blue.active = false;
+            btn.textContent = playerCount === 1 ? '1人モード' : `${playerCount}人対戦`;
+
+            for (const [key] of PLAYER_COLORS.slice(playerCount)) {
+                const t = trackers[key];
+                t.active = false;
+                t.vel = 0;
+                t.history.length = 0;
+                t.charge = 0;
             }
+            prevPairDists = {};
         }
         
         async function switchCamera() {
