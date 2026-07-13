@@ -48,6 +48,21 @@
             justify-content: flex-end;
         }
 
+        #playerThemeButtons {
+            display: flex;
+            gap: 4px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        #playerThemeButtons button {
+            min-width: 32px;
+            padding: 4px 7px;
+            font-size: 13px;
+            border-width: 2px;
+        }
+
+
         button {
             background: rgba(255,255,255,0.1);
             border: 1px solid rgba(255,255,255,0.15);
@@ -127,7 +142,7 @@
     <div id="header">
         <h1>📹 カメラで振る棒 対戦</h1>
         <div class="controls">
-            <button id="themeBtn">🎬リアル</button>
+            <div id="playerThemeButtons"></div>
             <button id="modeBtn">2人対戦</button>
             <button id="cameraBtn">📷</button>
             <button id="muteBtn">🔊</button>
@@ -146,7 +161,7 @@
         2. カメラにかざして振る → 速さに応じていろんな効果音が鳴ります<br>
         3. 棒で<strong>大きく円を描く</strong>とリングが溜まって ⚡必殺技！<br>
         4. 対戦人数ボタンで1〜5人モードを切替。複数本の棒を<strong>ぶつけ合う</strong>と衝撃音＆火花！<br>
-        5. <strong>⚡ボタン</strong>で音のテーマを切替：ビーム / サムライ / ヒーロー / ノーマル
+        5. 色付き<strong>テーマボタン</strong>で、プレイヤーごとに効果音テーマを個別に切替
     </div>
 
     <script>
@@ -172,7 +187,7 @@
 
         function createTracker(color) {
             return { x: 0, y: 0, prevX: 0, prevY: 0, vel: 0, dirX: 0, wasFast: false, size: 0, active: false,
-                lastTrigger: 0, history: [], charge: 0, lastSpecial: 0, specialFlashUntil: 0, color };
+                lastTrigger: 0, history: [], charge: 0, lastSpecial: 0, specialFlashUntil: 0, color, theme: 'real' };
         }
 
         function getActiveKeys() {
@@ -198,6 +213,16 @@
             return PLAYER_COLORS.find(([k]) => k === key)[2];
         }
 
+        function getPlayerTheme(key) {
+            return trackers[key]?.theme || 'real';
+        }
+
+        function themeButtonLabel(themeKey) {
+            const label = SOUND_THEMES.find(([k]) => k === themeKey)?.[1] || '🔔';
+            const idx = label.search(/[\u3040-\u9fff\uff00-\uffef]/);
+            return idx > 0 ? label.slice(0, idx) : label.slice(0, 2);
+        }
+
         // Sound themes: real (recorded samples) / beam (lightsaber-style) /
         // samurai (katana) / hero (sci-fi) / standard
         const SOUND_THEMES = [
@@ -212,7 +237,6 @@
             ['magic', '🔮魔法'],
             ['gun', '🔫ガン'],
         ];
-        let soundTheme = 'real';
 
         // Recorded one-shot samples, embedded as base64 WAV.
         // whoosh/punch/boom: pygame examples (public domain).
@@ -418,7 +442,7 @@
             const out = makePanner(clampPan(pan - dir * 0.35));
             out.pan.linearRampToValueAtTime(clampPan(pan + dir * 0.35), audioCtx.currentTime + 0.32);
 
-            switch (soundTheme) {
+            switch (getPlayerTheme(playerKey)) {
                                 case 'real': realSwing(velocity, out); break;
                 case 'beam': beamSwing(velocity, out); break;
                 case 'samurai': samuraiSwing(velocity, out); break;
@@ -733,13 +757,13 @@
             click.start(t0);
         }
 
-        function playImpact(intensity, pan = 0) {
+        function playImpact(intensity, pan = 0, playerKey = 'red') {
             if (!audioCtx || isMuted) return;
-            // Hits get a long reverb tail — the ring in the room sells it
-            const reverb = soundTheme === 'samurai' ? 0.45 : 0.28;
+            const theme = getPlayerTheme(playerKey);
+            const reverb = theme === 'samurai' ? 0.45 : 0.28;
             const out = makePanner(pan, reverb);
             transientClick(out, Math.min(0.8, 0.4 + intensity * 0.3));
-            switch (soundTheme) {
+            switch (theme) {
                                 case 'real': realImpact(intensity, out); break;
                 case 'beam': beamImpact(intensity, out); break;
                 case 'samurai': samuraiImpact(intensity, out); break;
@@ -753,10 +777,10 @@
             }
         }
 
-        function playSpecial(pan = 0) {
+        function playSpecial(pan = 0, playerKey = 'red') {
             if (!audioCtx || isMuted) return;
             const out = makePanner(pan, 0.38);
-            switch (soundTheme) {
+            switch (getPlayerTheme(playerKey)) {
                                 case 'real': realSpecial(out); break;
                 case 'beam': beamSpecial(out); break;
                 case 'samurai': samuraiSpecial(out); break;
@@ -924,7 +948,7 @@
             for (let i = 0; i < activeKeys.length; i++) {
                 const key = activeKeys[i];
                 const t = trackers[key];
-                const shouldPlay = soundTheme === 'beam' && !isMuted && t.active;
+                const shouldPlay = getPlayerTheme(key) === 'beam' && !isMuted && t.active;
                 if (shouldPlay) ensureHum(key, i);
                 const h = humState[key];
                 if (!h) continue;
@@ -1582,7 +1606,7 @@
             t.charge = 0;
 
             const pan = getPlayerPan(playerKey);
-            playSpecial(pan);
+            playSpecial(pan, playerKey);
 
             const colorStr = getPlayerStyle(playerKey).particles;
             spawnParticles(t.x, t.y, 46, colorStr, 1.6);
@@ -1646,7 +1670,7 @@
                         if (dist < 48 && approach > 65 && now - lastImpact > 280) {
                             lastImpact = now;
                             const intensity = Math.min(1.6, approach / 130);
-                            playImpact(intensity, (getPlayerPan(keyA) + getPlayerPan(keyB)) / 2);
+                            playImpact(intensity, (getPlayerPan(keyA) + getPlayerPan(keyB)) / 2, keyA);
                             const midX = (ta.x + tb.x) / 2;
                             const midY = (ta.y + tb.y) / 2;
                             spawnParticles(midX, midY, Math.round(14 + intensity * 16), '255,235,150', 1 + intensity * 0.5);
@@ -1823,11 +1847,27 @@
             }
         }
         
-        function cycleTheme() {
-            const idx = SOUND_THEMES.findIndex(([key]) => key === soundTheme);
-            const [key, label] = SOUND_THEMES[(idx + 1) % SOUND_THEMES.length];
-            soundTheme = key;
-            document.getElementById('themeBtn').textContent = label;
+        function cyclePlayerTheme(key) {
+            const t = trackers[key];
+            const idx = SOUND_THEMES.findIndex(([k]) => k === t.theme);
+            t.theme = SOUND_THEMES[(idx + 1) % SOUND_THEMES.length][0];
+            renderPlayerThemeButtons();
+        }
+
+        function renderPlayerThemeButtons() {
+            const container = document.getElementById('playerThemeButtons');
+            container.replaceChildren();
+            for (const key of getActiveKeys()) {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                const style = getPlayerStyle(key);
+                btn.style.borderColor = style.fill;
+                btn.style.background = style.fill + '33';
+                btn.textContent = themeButtonLabel(getPlayerTheme(key));
+                btn.title = `${style.labelJa}: ${SOUND_THEMES.find(([k]) => k === getPlayerTheme(key))?.[1] || ''}`;
+                btn.addEventListener('click', () => cyclePlayerTheme(key));
+                container.appendChild(btn);
+            }
         }
 
         function toggleMode() {
@@ -1843,6 +1883,7 @@
                 t.charge = 0;
             }
             prevPairDists = {};
+            renderPlayerThemeButtons();
         }
         
         async function switchCamera() {
@@ -1858,7 +1899,7 @@
         }
         
         function setupUI() {
-            document.getElementById('themeBtn').addEventListener('click', cycleTheme);
+            renderPlayerThemeButtons();
             document.getElementById('modeBtn').addEventListener('click', toggleMode);
             document.getElementById('cameraBtn').addEventListener('click', switchCamera);
             document.getElementById('muteBtn').addEventListener('click', toggleMute);
@@ -1874,7 +1915,6 @@
             // Keyboard shortcuts
             document.addEventListener('keydown', (e) => {
                 if (e.key.toLowerCase() === 'm') toggleMute();
-                if (e.key.toLowerCase() === 't') cycleTheme();
                 if (e.key === ' ') {
                     e.preventDefault();
                     toggleMode();
