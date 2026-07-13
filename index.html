@@ -22,27 +22,37 @@
             top: 0;
             left: 0;
             right: 0;
-            height: 52px;
+            min-height: 56px;
             background: rgba(10, 10, 18, 0.92);
             backdrop-filter: blur(14px);
             border-bottom: 1px solid rgba(255,255,255,0.08);
             display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 0 16px;
+            flex-direction: column;
+            align-items: stretch;
+            justify-content: center;
+            gap: 8px;
+            padding: 10px 12px 12px;
             z-index: 200;
         }
         
         #header h1 {
             margin: 0;
-            font-size: 16px;
+            font-size: 15px;
             font-weight: 700;
             letter-spacing: 0.3px;
+            flex-shrink: 0;
+        }
+
+        .header-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
         }
         
         .controls {
             display: flex;
-            gap: 6px;
+            gap: 8px;
             align-items: center;
             flex-wrap: wrap;
             justify-content: flex-end;
@@ -50,16 +60,36 @@
 
         #playerThemeButtons {
             display: flex;
-            gap: 4px;
+            gap: 8px;
             flex-wrap: wrap;
-            align-items: center;
+            align-items: stretch;
+            width: 100%;
         }
 
         #playerThemeButtons button {
-            min-width: 32px;
-            padding: 4px 7px;
-            font-size: 13px;
+            flex: 1 1 0;
+            min-width: 72px;
+            min-height: 48px;
+            padding: 10px 12px;
+            font-size: 15px;
+            line-height: 1.2;
             border-width: 2px;
+            border-radius: 14px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            white-space: nowrap;
+        }
+
+        #playerThemeButtons button .theme-emoji {
+            font-size: 20px;
+            line-height: 1;
+        }
+
+        #playerThemeButtons button .theme-name {
+            font-size: 13px;
+            font-weight: 700;
         }
 
 
@@ -113,7 +143,7 @@
         
         .info {
             position: fixed;
-            top: 60px;
+            top: 120px;
             left: 16px;
             right: 16px;
             background: rgba(10,10,18,0.75);
@@ -140,13 +170,15 @@
 </head>
 <body>
     <div id="header">
-        <h1>📹 カメラで振る棒 対戦</h1>
-        <div class="controls">
-            <div id="playerThemeButtons"></div>
-            <button id="modeBtn">2人対戦</button>
-            <button id="cameraBtn">📷</button>
-            <button id="muteBtn">🔊</button>
+        <div class="header-row">
+            <h1>📹 カメラで振る棒 対戦</h1>
+            <div class="controls">
+                <button id="modeBtn">2人対戦</button>
+                <button id="cameraBtn">📷</button>
+                <button id="muteBtn">🔊</button>
+            </div>
         </div>
+        <div id="playerThemeButtons"></div>
     </div>
 
     <div id="main">
@@ -187,7 +219,7 @@
 
         function createTracker(color) {
             return { x: 0, y: 0, prevX: 0, prevY: 0, vel: 0, dirX: 0, wasFast: false, size: 0, active: false,
-                lastTrigger: 0, history: [], charge: 0, lastSpecial: 0, specialFlashUntil: 0, color, theme: 'real' };
+                lastTrigger: 0, history: [], charge: 0, lastSpecial: 0, specialFlashUntil: 0, color, theme: 'sword' };
         }
 
         function getActiveKeys() {
@@ -214,23 +246,18 @@
         }
 
         function getPlayerTheme(key) {
-            return trackers[key]?.theme || 'real';
+            return trackers[key]?.theme || 'sword';
         }
 
-        function themeButtonLabel(themeKey) {
-            const label = SOUND_THEMES.find(([k]) => k === themeKey)?.[1] || '🔔';
+        function themeButtonParts(themeKey) {
+            const label = SOUND_THEMES.find(([k]) => k === themeKey)?.[1] || '🗡️剣';
             const idx = label.search(/[\u3040-\u9fff\uff00-\uffef]/);
-            return idx > 0 ? label.slice(0, idx) : label.slice(0, 2);
+            if (idx > 0) return { emoji: label.slice(0, idx), name: label.slice(idx) };
+            return { emoji: label.slice(0, 2), name: label.slice(2) || label };
         }
 
-        // Sound themes: real (recorded samples) / beam (lightsaber-style) /
-        // samurai (katana) / hero (sci-fi) / standard
+        // Sound themes: sword / katana / fight / magic / gun
         const SOUND_THEMES = [
-            ['real', '🎬リアル'],
-            ['beam', '⚡ビーム'],
-            ['samurai', '🗡️サムライ'],
-            ['hero', '🚀ヒーロー'],
-            ['standard', '🔔ノーマル'],
             ['sword', '🗡️剣'],
             ['katana', '⛩️刀'],
             ['fight', '🥊格闘'],
@@ -443,16 +470,12 @@
             out.pan.linearRampToValueAtTime(clampPan(pan + dir * 0.35), audioCtx.currentTime + 0.32);
 
             switch (getPlayerTheme(playerKey)) {
-                                case 'real': realSwing(velocity, out); break;
-                case 'beam': beamSwing(velocity, out); break;
-                case 'samurai': samuraiSwing(velocity, out); break;
-                case 'hero': heroSwing(velocity, out); break;
-                case 'sword': swordSwing(velocity, out); break;
                 case 'katana': katanaSwing(velocity, out); break;
                 case 'fight': fightSwing(velocity, out); break;
                 case 'magic': magicSwing(velocity, out); break;
                 case 'gun': gunSwing(velocity, out); break;
-                default: standardSwing(velocity, out);
+                case 'sword':
+                default: swordSwing(velocity, out);
             }
         }
 
@@ -760,20 +783,16 @@
         function playImpact(intensity, pan = 0, playerKey = 'red') {
             if (!audioCtx || isMuted) return;
             const theme = getPlayerTheme(playerKey);
-            const reverb = theme === 'samurai' ? 0.45 : 0.28;
+            const reverb = theme === 'katana' ? 0.45 : 0.28;
             const out = makePanner(pan, reverb);
             transientClick(out, Math.min(0.8, 0.4 + intensity * 0.3));
             switch (theme) {
-                                case 'real': realImpact(intensity, out); break;
-                case 'beam': beamImpact(intensity, out); break;
-                case 'samurai': samuraiImpact(intensity, out); break;
-                case 'hero': heroImpact(intensity, out); break;
-                case 'sword': swordImpact(intensity, out); break;
                 case 'katana': katanaImpact(intensity, out); break;
                 case 'fight': fightImpact(intensity, out); break;
                 case 'magic': magicImpact(intensity, out); break;
                 case 'gun': gunImpact(intensity, out); break;
-                default: standardImpact(intensity, out);
+                case 'sword':
+                default: swordImpact(intensity, out);
             }
         }
 
@@ -781,16 +800,12 @@
             if (!audioCtx || isMuted) return;
             const out = makePanner(pan, 0.38);
             switch (getPlayerTheme(playerKey)) {
-                                case 'real': realSpecial(out); break;
-                case 'beam': beamSpecial(out); break;
-                case 'samurai': samuraiSpecial(out); break;
-                case 'hero': heroSpecial(out); break;
-                case 'sword': swordSpecial(out); break;
                 case 'katana': katanaSpecial(out); break;
                 case 'fight': fightSpecial(out); break;
                 case 'magic': magicSpecial(out); break;
                 case 'gun': gunSpecial(out); break;
-                default: standardSpecial(out);
+                case 'sword':
+                default: swordSpecial(out);
             }
         }
 
@@ -948,7 +963,7 @@
             for (let i = 0; i < activeKeys.length; i++) {
                 const key = activeKeys[i];
                 const t = trackers[key];
-                const shouldPlay = getPlayerTheme(key) === 'beam' && !isMuted && t.active;
+                const shouldPlay = false && getPlayerTheme(key) === 'beam' && !isMuted && t.active;
                 if (shouldPlay) ensureHum(key, i);
                 const h = humState[key];
                 if (!h) continue;
@@ -1849,8 +1864,9 @@
         
         function cyclePlayerTheme(key) {
             const t = trackers[key];
+            if (!t) return;
             const idx = SOUND_THEMES.findIndex(([k]) => k === t.theme);
-            t.theme = SOUND_THEMES[(idx + 1) % SOUND_THEMES.length][0];
+            t.theme = SOUND_THEMES[(idx < 0 ? 0 : (idx + 1) % SOUND_THEMES.length)][0];
             renderPlayerThemeButtons();
         }
 
@@ -1858,13 +1874,19 @@
             const container = document.getElementById('playerThemeButtons');
             container.replaceChildren();
             for (const key of getActiveKeys()) {
+                const style = getPlayerStyle(key);
+                const themeKey = getPlayerTheme(key);
+                const parts = themeButtonParts(themeKey);
+                const fullLabel = SOUND_THEMES.find(([k]) => k === themeKey)?.[1] || '';
                 const btn = document.createElement('button');
                 btn.type = 'button';
-                const style = getPlayerStyle(key);
+                btn.innerHTML = `<span class="theme-emoji">${parts.emoji}</span><span class="theme-name">${style.labelJa} ${parts.name}</span>`;
+                btn.title = `${style.labelJa}: ${fullLabel}（タップで切替）`;
+                btn.setAttribute('aria-label', `${style.labelJa}のテーマ ${fullLabel}`);
                 btn.style.borderColor = style.fill;
-                btn.style.background = style.fill + '33';
-                btn.textContent = themeButtonLabel(getPlayerTheme(key));
-                btn.title = `${style.labelJa}: ${SOUND_THEMES.find(([k]) => k === getPlayerTheme(key))?.[1] || ''}`;
+                btn.style.color = style.fill;
+                btn.style.background = 'rgba(0,0,0,0.28)';
+                btn.style.boxShadow = `0 0 0 1px ${style.fill}33 inset`;
                 btn.addEventListener('click', () => cyclePlayerTheme(key));
                 container.appendChild(btn);
             }
