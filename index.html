@@ -462,18 +462,29 @@
                 compressor.release.value = 0.18;
                 compressor.connect(audioCtx.destination);
 
+                // Ducking gain: sits between the regular mix and the
+                // compressor so a special move can duck everyone else's
+                // sound while playing through specialBus, which bypasses it.
+                const duck = audioCtx.createGain();
+                duck.gain.value = 1;
+                duck.connect(compressor);
+
+                const specialBus = audioCtx.createGain();
+                specialBus.gain.value = 1;
+                specialBus.connect(compressor);
+
                 const input = audioCtx.createGain();
                 input.gain.value = 0.9;
-                input.connect(compressor);
+                input.connect(duck);
 
                 const convolver = audioCtx.createConvolver();
                 convolver.buffer = makeImpulseResponse(1.9, 2.8);
                 const wet = audioCtx.createGain();
                 wet.gain.value = 0.9;
                 convolver.connect(wet);
-                wet.connect(compressor);
+                wet.connect(duck);
 
-                master = { input, reverb: convolver };
+                master = { input, reverb: convolver, duck, specialBus };
 
                 loadSamples();
             } catch(e) {}
@@ -492,10 +503,13 @@
 
         // Output node with dry signal to the master bus plus a reverb send.
         // reverbAmount ~0.1 = dry-ish swing, ~0.4 = ringing cinematic tail.
-        function makePanner(pan, reverbAmount = 0.16) {
+        // bypassDuck routes straight to specialBus, skipping the ducking
+        // gain — used for the special-move sound itself so it stays at
+        // full volume while everything else gets ducked under it.
+        function makePanner(pan, reverbAmount = 0.16, bypassDuck = false) {
             const panner = audioCtx.createStereoPanner();
             panner.pan.value = Math.max(-0.9, Math.min(0.9, pan));
-            panner.connect(master.input);
+            panner.connect(bypassDuck ? master.specialBus : master.input);
             if (reverbAmount > 0) {
                 const send = audioCtx.createGain();
                 send.gain.value = reverbAmount;
@@ -503,6 +517,20 @@
                 send.connect(master.reverb);
             }
             return panner;
+        }
+
+        // Duck the regular mix (everyone else's swings/impacts + reverb
+        // tail) down to `depth` so a special move's own sound (routed via
+        // makePanner(..., true)) reads clearly over the top, then recover.
+        function duckMaster(depth = 0.1, holdMs = 850, releaseMs = 450) {
+            if (!audioCtx || !master) return;
+            const now = audioCtx.currentTime;
+            const g = master.duck.gain;
+            g.cancelScheduledValues(now);
+            g.setValueAtTime(g.value, now);
+            g.linearRampToValueAtTime(depth, now + 0.04);
+            g.setValueAtTime(depth, now + 0.04 + holdMs / 1000);
+            g.linearRampToValueAtTime(1, now + 0.04 + holdMs / 1000 + releaseMs / 1000);
         }
 
         function playWhoosh(velocity, playerKey, pan = 0, dir = 0) {
@@ -749,7 +777,8 @@
 
         function playSpecial(pan = 0, playerKey = 'red') {
             if (!audioCtx || isMuted) return;
-            const out = makePanner(pan, 0.38);
+            duckMaster();
+            const out = makePanner(pan, 0.38, true);
             switch (getPlayerTheme(playerKey)) {
                 case 'katana': katanaSpecial(out); break;
                 case 'fight': fightSpecial(out); break;
