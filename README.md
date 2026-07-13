@@ -36,4 +36,15 @@ python3 -m http.server 8000
 - whoosh / punch / boom — [pygame](https://www.pygame.org/) examples data（パブリックドメイン）
 - hit / rock / riser / explosion / laser / phase — [Kenney.nl](https://kenney.nl/)（CC0）、[Python Arcade](https://api.arcade.academy/) 同梱版より
 
-剣・刀・格闘・魔法・ガンの各テーマには、ユーザー提供の効果音素材（加工してBase64埋め込み）とWeb Audio APIの合成を組み合わせています。
+剣・刀・格闘・魔法・ガン・セイバーの各テーマには、ユーザー提供の効果音素材（加工してBase64埋め込み）とWeb Audio APIの合成を組み合わせています。
+
+### Freesound クレジット（CC-BY / CC0）
+
+| ID | 作者 | 用途 |
+|---|---|---|
+| 47123 | gyzhor | セイバー必殺技（連続殺陣） |
+| 557194 | pip | セイバー必殺技（再点火） |
+| 828970 | misterjohnson69 | 剣テーマ打ち合い（クラッシュ） |
+| 861889 | artninja | 剣テーマ必殺技（スクレイプ） |
+| 843102 | artninja | 魔法テーマ必殺技（エクスカリバー・ブラスト） |
+| 5968 | joe93barlow | セイバーテーマ（起動/停止/ハム/スイング/ヒット等、CC0） |
