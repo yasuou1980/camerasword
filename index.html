@@ -1176,6 +1176,8 @@
             document.getElementById('modeBtn').addEventListener('click', toggleMode);
             document.getElementById('cameraBtn').addEventListener('click', switchCamera);
             document.getElementById('muteBtn').addEventListener('click', toggleMute);
+            document.getElementById('timerDurationBtn').addEventListener('click', cycleTimerDuration);
+            document.getElementById('timerStartBtn').addEventListener('click', toggleMatchTimer);
             
             // Tap anywhere to init audio (iOS requirement)
             canvas.addEventListener('pointerdown', () => {
