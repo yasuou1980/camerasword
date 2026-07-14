@@ -202,6 +202,7 @@
                 <button id="timerDurationBtn">1分</button>
                 <button id="timerStartBtn">試合開始</button>
                 <button id="modeBtn">2人対戦</button>
+                <button id="calibBtn">🎯色調整</button>
                 <button id="cameraBtn">📷</button>
                 <button id="muteBtn">🔊</button>
             </div>
@@ -223,7 +224,8 @@
         3. 棒で<strong>大きく円を描く</strong>とリングが溜まって ⚡必殺技！<br>
         4. 対戦人数ボタンで1〜5人モードを切替。複数本の棒を<strong>ぶつけ合う</strong>と衝撃音＆火花！<br>
         5. 色付き<strong>テーマボタン</strong>で、プレイヤーごとに効果音テーマを個別に切替<br>
-        6. <strong>試合開始</strong>でタイマー開始（1/2/3分）。終了時にゴングと TIME UP 表示
+        6. <strong>試合開始</strong>でタイマー開始（1/2/3分）。終了時にゴングと TIME UP 表示<br>
+        7. マーカーの反応が悪いときは<strong>🎯色調整</strong>：色を選んで実物を円にかざすと、その場の照明での色を覚えます
     </div>
 
     <script>
@@ -246,6 +248,134 @@
             ['purple', { r: 160, g: 70,  b: 210 }, { fill: '#a046d2', trail: 'rgba(160,70,210,0.35)', glowFast: 'rgba(150,60,200,0.3)', glowSlow: 'rgba(170,80,220,0.18)', ring: 'rgba(210,150,255,0.9)', particles: '160,70,210',  labelJa: '紫' }]
         ];
         const COLOR_TOLERANCE = { red: 65, blue: 72, yellow: 68, green: 68, purple: 70 };
+
+        // Runtime detection targets. Camera lighting shifts marker colors a
+        // lot (greens especially read dark/washed-out), so these can be
+        // re-sampled in-game via the 🎯色調整 button and persist locally.
+        const DETECT_COLORS_STORAGE_KEY = 'camerasword_detect_colors_v1';
+
+        function defaultDetectColors() {
+            const out = {};
+            for (const [key, rgb] of PLAYER_COLORS) {
+                out[key] = { r: rgb.r, g: rgb.g, b: rgb.b, tol: COLOR_TOLERANCE[key] };
+            }
+            return out;
+        }
+
+        let detectColors = defaultDetectColors();
+        try {
+            const saved = JSON.parse(localStorage.getItem(DETECT_COLORS_STORAGE_KEY));
+            if (saved) {
+                for (const [key] of PLAYER_COLORS) {
+                    const c = saved[key];
+                    if (c && [c.r, c.g, c.b, c.tol].every(v => typeof v === 'number')) {
+                        detectColors[key] = c;
+                    }
+                }
+            }
+        } catch (e) {}
+
+        function saveDetectColors() {
+            try {
+                localStorage.setItem(DETECT_COLORS_STORAGE_KEY, JSON.stringify(detectColors));
+            } catch (e) {}
+        }
+
+        // Calibration flow: pick a player, hold the marker in the center
+        // circle, and the actual on-camera color becomes the new target.
+        const CALIB_FRAMES_NEEDED = 30;
+        const CALIB_RADIUS = 30; // analysis-space pixels
+        let calibration = { active: false, key: null, samples: [], lastSeen: null, startedAt: 0 };
+
+        function startCalibration() {
+            calibration = { active: true, key: null, samples: [], lastSeen: null, startedAt: performance.now() };
+            renderPlayerThemeButtons();
+        }
+
+        function cancelCalibration() {
+            calibration = { active: false, key: null, samples: [], lastSeen: null, startedAt: 0 };
+            renderPlayerThemeButtons();
+        }
+
+        function beginCalibrationSampling(key) {
+            calibration.key = key;
+            calibration.samples = [];
+            calibration.lastSeen = null;
+            calibration.startedAt = performance.now();
+            renderPlayerThemeButtons();
+        }
+
+        function resetDetectColors() {
+            detectColors = defaultDetectColors();
+            saveDetectColors();
+            cancelCalibration();
+        }
+
+        // Short confirmation blip when a color is registered
+        function playCalibDone() {
+            if (!audioCtx || isMuted) return;
+            const out = makePanner(0, 0.1);
+            const t0 = audioCtx.currentTime;
+            [660, 990].forEach((f, i) => {
+                const osc = audioCtx.createOscillator();
+                osc.type = 'sine';
+                osc.frequency.value = f;
+                const g = audioCtx.createGain();
+                g.gain.setValueAtTime(0.001, t0 + i * 0.09);
+                g.gain.exponentialRampToValueAtTime(0.3, t0 + i * 0.09 + 0.02);
+                g.gain.exponentialRampToValueAtTime(0.001, t0 + i * 0.09 + 0.18);
+                osc.connect(g);
+                g.connect(out);
+                osc.start(t0 + i * 0.09);
+                osc.stop(t0 + i * 0.09 + 0.2);
+            });
+        }
+
+        // Sample the calibration circle: average the "colorful" pixels
+        // (saturated & bright enough to be a marker rather than background).
+        function sampleCalibrationCircle(imageData) {
+            const cx = analysisW / 2, cy = analysisH / 2;
+            const r2 = CALIB_RADIUS * CALIB_RADIUS;
+            const data = imageData.data;
+            let sr = 0, sg = 0, sb = 0, count = 0, dev = 0;
+            const px = [];
+            for (let y = Math.floor(cy - CALIB_RADIUS); y <= cy + CALIB_RADIUS; y++) {
+                for (let x = Math.floor(cx - CALIB_RADIUS); x <= cx + CALIB_RADIUS; x++) {
+                    if ((x - cx) * (x - cx) + (y - cy) * (y - cy) > r2) continue;
+                    const i = (y * analysisW + x) * 4;
+                    const r = data[i], g = data[i + 1], b = data[i + 2];
+                    const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+                    if (mx - mn < 25 || mx < 50) continue; // grey/dark: not a marker
+                    sr += r; sg += g; sb += b; count++;
+                    px.push([r, g, b]);
+                }
+            }
+            if (count < 30) return null;
+            const mean = { r: sr / count, g: sg / count, b: sb / count };
+            for (const [r, g, b] of px) {
+                dev += Math.abs(r - mean.r) + Math.abs(g - mean.g) + Math.abs(b - mean.b);
+            }
+            mean.dev = dev / count;
+            return mean;
+        }
+
+        function finishCalibration() {
+            const s = calibration.samples;
+            const n = s.length;
+            const mean = {
+                r: Math.round(s.reduce((a, v) => a + v.r, 0) / n),
+                g: Math.round(s.reduce((a, v) => a + v.g, 0) / n),
+                b: Math.round(s.reduce((a, v) => a + v.b, 0) / n)
+            };
+            const avgDev = s.reduce((a, v) => a + v.dev, 0) / n;
+            const tol = Math.max(55, Math.min(110, Math.round(avgDev * 1.5 + 45)));
+            detectColors[calibration.key] = { r: mean.r, g: mean.g, b: mean.b, tol };
+            saveDetectColors();
+            playCalibDone();
+            screenFlash.alpha = 0.3;
+            screenFlash.color = getPlayerStyle(calibration.key).particles;
+            cancelCalibration();
+        }
 
         function createTracker(color) {
             return { x: 0, y: 0, prevX: 0, prevY: 0, vel: 0, dirX: 0, wasFast: false, size: 0, active: false,
@@ -933,16 +1063,29 @@
             const activeKeys = getActiveKeys();
 
             for (const key of activeKeys) {
-                const entry = PLAYER_COLORS.find(([k]) => k === key);
-                const rgb = entry[1];
-                const blob = findColorCentroid(imageData, rgb.r, rgb.g, rgb.b, COLOR_TOLERANCE[key]);
+                const c = detectColors[key];
+                const blob = findColorCentroid(imageData, c.r, c.g, c.b, c.tol);
                 updateTracker(key, blob, dt);
             }
             for (const [key] of PLAYER_COLORS.slice(playerCount)) {
                 trackers[key].active = false;
             }
-            
 
+            // Calibration sampling: collect on-camera color from the circle
+            if (calibration.active && calibration.key) {
+                const sample = sampleCalibrationCircle(imageData);
+                calibration.lastSeen = sample;
+                if (sample) calibration.samples.push(sample);
+                if (calibration.samples.length >= CALIB_FRAMES_NEEDED) {
+                    finishCalibration();
+                } else if (now - calibration.startedAt > 15000) {
+                    cancelCalibration(); // give up after 15s without a lock
+                }
+            }
+
+            // Sound triggers pause while calibrating so waving a marker
+            // into the circle doesn't set off swings/specials/impacts
+            if (!calibration.active) {
             for (const key of activeKeys) {
                 const t = trackers[key];
                 const fast = t.active && t.vel > 42;
@@ -953,7 +1096,7 @@
             }
 
             updateSaberHumGains();
-            
+
             for (const key of activeKeys) {
                 const t = trackers[key];
                 if (t.active && t.charge >= 0.92 && now - t.lastSpecial > 3000) {
@@ -987,6 +1130,7 @@
                     prevPairDists[pk] = dist;
                 }
             }
+            } // end !calibration.active sound-trigger block
 
             // Update particles (analysis-space physics)
             for (let i = particles.length - 1; i >= 0; i--) {
@@ -1036,6 +1180,64 @@
                     ctx.textAlign = 'center';
                     const yFrac = activeKeys.length <= 1 ? 0.47 : 0.32 + (idx / Math.max(1, activeKeys.length - 1)) * 0.36;
                     ctx.fillText(`⚡ P${idx + 1} 必殺技!!`, canvas.width / 2, canvas.height * yFrac);
+                }
+            }
+
+            // Calibration overlay
+            if (calibration.active) {
+                ctx.fillStyle = 'rgba(0,0,0,0.45)';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                const ccx = canvas.width / 2;
+                const ccy = canvas.height / 2;
+                const rad = CALIB_RADIUS * (scaleX + scaleY) / 2;
+
+                ctx.textAlign = 'center';
+                if (!calibration.key) {
+                    ctx.fillStyle = '#fff';
+                    ctx.font = 'bold 20px "Noto Sans JP", system-ui, sans-serif';
+                    ctx.fillText('調整する色のボタンを押してください', ccx, ccy);
+                } else {
+                    const style = getPlayerStyle(calibration.key);
+                    // punch a "window" so the camera shows through the circle
+                    ctx.save();
+                    ctx.beginPath();
+                    ctx.arc(ccx, ccy, rad, 0, Math.PI * 2);
+                    ctx.clip();
+                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                    ctx.restore();
+
+                    // ring + progress arc
+                    ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+                    ctx.lineWidth = 6;
+                    ctx.beginPath();
+                    ctx.arc(ccx, ccy, rad + 8, 0, Math.PI * 2);
+                    ctx.stroke();
+                    const progress = calibration.samples.length / CALIB_FRAMES_NEEDED;
+                    ctx.strokeStyle = style.fill;
+                    ctx.beginPath();
+                    ctx.arc(ccx, ccy, rad + 8, -Math.PI / 2, -Math.PI / 2 + progress * Math.PI * 2);
+                    ctx.stroke();
+
+                    ctx.fillStyle = '#fff';
+                    ctx.font = 'bold 20px "Noto Sans JP", system-ui, sans-serif';
+                    ctx.fillText(`${style.labelJa}のマーカーを円の中に`, ccx, ccy - rad - 28);
+                    ctx.font = '14px "Noto Sans JP", system-ui, sans-serif';
+                    ctx.fillText(
+                        calibration.lastSeen ? `読み取り中… ${Math.round(progress * 100)}%` : '色が見つかりません（マーカーを近づけて）',
+                        ccx, ccy + rad + 34);
+
+                    // live swatch of what the camera is seeing
+                    if (calibration.lastSeen) {
+                        const s = calibration.lastSeen;
+                        ctx.fillStyle = `rgb(${Math.round(s.r)},${Math.round(s.g)},${Math.round(s.b)})`;
+                        ctx.beginPath();
+                        ctx.arc(ccx, ccy + rad + 62, 14, 0, Math.PI * 2);
+                        ctx.fill();
+                        ctx.strokeStyle = '#fff';
+                        ctx.lineWidth = 2;
+                        ctx.stroke();
+                    }
                 }
             }
 
@@ -1174,6 +1376,35 @@
         function renderPlayerThemeButtons() {
             const container = document.getElementById('playerThemeButtons');
             container.replaceChildren();
+
+            // Calibration mode repurposes the row: pick a color to sample,
+            // reset to defaults, or bail out
+            if (calibration.active) {
+                for (const key of getActiveKeys()) {
+                    const style = getPlayerStyle(key);
+                    const btn = document.createElement('button');
+                    btn.type = 'button';
+                    const sampling = calibration.key === key;
+                    btn.innerHTML = `<span class="theme-emoji">🎯</span><span class="theme-name">${style.labelJa}${sampling ? ' 読取中…' : 'を調整'}</span>`;
+                    btn.style.borderColor = style.fill;
+                    btn.style.color = style.fill;
+                    btn.style.background = sampling ? `${style.fill}33` : 'rgba(0,0,0,0.28)';
+                    btn.addEventListener('click', () => beginCalibrationSampling(key));
+                    container.appendChild(btn);
+                }
+                const resetBtn = document.createElement('button');
+                resetBtn.type = 'button';
+                resetBtn.innerHTML = '<span class="theme-emoji">↩️</span><span class="theme-name">初期値に戻す</span>';
+                resetBtn.addEventListener('click', resetDetectColors);
+                container.appendChild(resetBtn);
+                const closeBtn = document.createElement('button');
+                closeBtn.type = 'button';
+                closeBtn.innerHTML = '<span class="theme-emoji">✕</span><span class="theme-name">やめる</span>';
+                closeBtn.addEventListener('click', cancelCalibration);
+                container.appendChild(closeBtn);
+                return;
+            }
+
             for (const key of getActiveKeys()) {
                 const style = getPlayerStyle(key);
                 const themeKey = getPlayerTheme(key);
@@ -1331,6 +1562,10 @@
             document.getElementById('muteBtn').addEventListener('click', toggleMute);
             document.getElementById('timerDurationBtn').addEventListener('click', cycleTimerDuration);
             document.getElementById('timerStartBtn').addEventListener('click', toggleMatchTimer);
+            document.getElementById('calibBtn').addEventListener('click', () => {
+                if (calibration.active) cancelCalibration();
+                else startCalibration();
+            });
             
             // Tap anywhere to init audio (iOS requirement)
             canvas.addEventListener('pointerdown', () => {
