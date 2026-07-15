@@ -36,7 +36,7 @@ python3 -m http.server 8000
 - whoosh / punch / boom — [pygame](https://www.pygame.org/) examples data（パブリックドメイン）
 - hit / rock / riser / explosion / laser / phase — [Kenney.nl](https://kenney.nl/)（CC0）、[Python Arcade](https://api.arcade.academy/) 同梱版より
 
-剣・刀・格闘・魔法・ガン・セイバー・魔法少女の各テーマには、ユーザー提供の効果音素材（加工してBase64埋め込み）とWeb Audio APIの合成を組み合わせています。
+剣・刀・格闘・魔法・ガン・セイバー・魔法少女・気功の各テーマには、ユーザー提供の効果音素材（加工してBase64埋め込み）とWeb Audio APIの合成を組み合わせています。
 
 ### Freesound クレジット（CC-BY / CC0）
 
